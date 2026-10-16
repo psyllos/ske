@@ -101,8 +101,16 @@ pub struct Responses {
     stdout: std::process::ChildStdout,
     count: u64,
     limits: RunLimits,
+    eof: bool,
 }
 impl Responses {
+    fn read_exact(&mut self, bytes: &mut [u8]) -> Result<()> {
+        self.stdout.read_exact(bytes).map_err(|e| {
+            self.eof |= e.kind() == std::io::ErrorKind::UnexpectedEof;
+            err("E_PROTO_DECODE", e.to_string())
+        })
+    }
+
     fn next(&mut self) -> Result<Option<adapter_response::Body>> {
         let mut prefix = [0; 4];
         if self
@@ -111,11 +119,10 @@ impl Responses {
             .map_err(|e| err("E_PROTO_DECODE", e.to_string()))?
             == 0
         {
+            self.eof = true;
             return Ok(None);
         }
-        self.stdout
-            .read_exact(&mut prefix[1..])
-            .map_err(|e| err("E_PROTO_DECODE", e.to_string()))?;
+        self.read_exact(&mut prefix[1..])?;
         self.count += 1;
         let size = u32::from_be_bytes(prefix) as usize;
         if size as u64 > self.limits.max_message_bytes || self.count > self.limits.max_messages {
@@ -128,9 +135,7 @@ impl Responses {
             return Err(err("E_PROTO_DECODE", "empty adapter frame"));
         }
         let mut body = vec![0; size];
-        self.stdout
-            .read_exact(&mut body)
-            .map_err(|e| err("E_PROTO_DECODE", e.to_string()))?;
+        self.read_exact(&mut body)?;
         let response = AdapterResponse::decode(body.as_slice())
             .map_err(|e| err("E_PROTO_DECODE", e.to_string()))?;
         match response.body {
@@ -265,44 +270,23 @@ fn run<T>(
         .and_then(|()| stdin.write_all(&body));
     drop(stdin);
     write.map_err(|e| err("E_ADAPTER_LIMIT", e.to_string()))?;
-    let value = consume(&mut Responses {
+    let mut responses = Responses {
         stdout,
         count: 0,
         limits: limits.clone(),
-    });
-    if value.is_err() {
+        eof: false,
+    };
+    let value = consume(&mut responses);
+    // EOF can be caused by a hard allocation failure (Linux RLIMIT_AS), not
+    // malformed IPC. Reap the child below before classifying an incomplete
+    // response, even when stdout closes just before the process exits.
+    // Other protocol errors still terminate promptly without waiting for EOF.
+    if value.is_err() && !responses.eof {
         if process.exceeded.load(Ordering::SeqCst) {
             return Err(err(
                 "E_ADAPTER_LIMIT",
                 "adapter time/memory monitoring limit exceeded",
             ));
-        }
-        // A Linux hard address-space limit can make an allocation fail and
-        // the process exit before the RSS watchdog samples it. At EOF the
-        // protocol parser reports missing Done; do not let that mask a failed
-        // process. Give process teardown a small, bounded grace period, without
-        // waiting indefinitely for a malformed adapter that is still running.
-        let deadline = Instant::now() + Duration::from_millis(50);
-        loop {
-            let status = process
-                .child
-                .lock()
-                .unwrap()
-                .try_wait()
-                .map_err(|e| err("E_ADAPTER_LIMIT", e.to_string()))?;
-            if let Some(status) = status {
-                if !status.success() {
-                    return Err(err(
-                        "E_ADAPTER_LIMIT",
-                        format!("adapter exited with {status}"),
-                    ));
-                }
-                break;
-            }
-            if Instant::now() >= deadline {
-                break;
-            }
-            thread::sleep(Duration::from_millis(5));
         }
         return value;
     }

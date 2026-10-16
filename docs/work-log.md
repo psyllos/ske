@@ -958,3 +958,184 @@ Prochaine étape : commit local du port + re-validation, puis land vers la
 destination pactisée (branche publiée puis main). Aucun push/merge partagé
 avant autorisation explicite de cette étape de land.
 
+## Contexte fusionné — historique v0.4 de la branche parallèle
+
+Sections suivantes reprises de la branche parallèle (landing v0.4 : SIGINT,
+parsing SMT par lots, réconciliation adaptateur, validation finale) et
+conservées telles quelles pour l'historique durable.
+
+### Landing bloqué — état final de cette tentative
+
+CI du correctif mémoire `9106713` :
+https://github.com/psyllos/ske/actions/runs/38901291552 — FAIL sur
+`cancel_sigint_preserves_streamed_arrivals`, le défaut mémoire Linux étant
+passé. Ce même blocage SIGINT est reproduit par la régression locale
+imbriquée : AC-0.2-22, puis AC-0.3-25 et AC-0.4-14 FAIL.
+
+Un essai sur le garde d'interruption Z3 a passé ses tests ciblés mais la
+validation complète suivante a dépassé 1 000 000 ms. Essai retiré, pas
+publié ni présenté comme correction. Aucun processus de validation de cette
+tentative ne reste actif selon la vérification pgrep finale.
+
+Pendant cette tentative, main a avancé indépendamment à `02df44f`, après
+`d160ad3` (correctif de sortie adaptateur). Le checkpoint v0.4 n'y est pas
+présent selon la vérification d'ascendance. Cet agent n'a pas modifié main,
+n'a pas forcé de push et ne doit pas écraser le correctif arrivé en parallèle.
+
+Rapport durable : `docs/validation/BLOCKED-v0.4-land-ci.md`.
+Il faut corriger/valider l'annulation et réconcilier main avant de retenter
+le landing. Les annonces précédentes de validation locale restent historiques,
+pas une attestation de CI verte actuelle.
+
+## Résolution annulation SIGINT — parse SMT-LIB alimenté en lots bornés
+
+Racine (confirmée par l'expérience) : `Z3_solver_from_string` n'est pas
+interruptible et n'est pas borné par `timeout`/`rlimit` (qui ne valent que
+pour `check`). Le texte SMT croît à chaque déroulage de boucle ; un parse
+géant peut occuper >45 s sans consulter `cancelled`. L'ancien watchdog
+(thread `thread::scope` + `handle.interrupt()`) n'entourait que `solver.check()`.
+Étendre ce garde à `from_string` ne suffit pas : répéter `interrupt()` pendant
+un parse de 1,5 M d'assertions ne l'abrège pas (6,13 s).
+
+Correctif `crates/ske-solver/src/backend.rs` : quand l'appel est annulable, le
+texte SMT-LIB est envoyé à Z3 par lots de 16 384 lignes (une ligne = une
+commande complète, invariant de `crate::encode`), en vérifiant `cancelled()` et
+l'échéance entre lots ; un abandon en cours de parse renvoie
+`Unknown { reason: "interrupted" }` sans `check` d'un jeu partiel. Le watchdog
+garde le `check` interruptible, en ré-acerbant l'interruption jusqu'au retour
+(pas une seule interruption perdue avant le démarrage du check).
+
+Régression `cancellation_interrupts_long_parse` (1,5 M d'assertions, annulation
+50 ms après le début du parse) : FAIL réel avant correctif (~6,28 s), PASS après
+(~73 ms). `cancel_interrupts_solver_promptly` inchangé PASS ; `cancel_sigint`
+PASS ; 9 tests solver PASS.
+
+Exécutions : `cargo test --workspace` 66 lots ok sans échec ; clippy
+`--workspace --all-targets -D warnings` vert ; `cargo fmt --check` vert ;
+`python3 scripts/validate-v04.py` AC-0.4-01..14 PASS, AC-0.2-22 re-PASS,
+AC-0.4-14 (`verify.sh && validate-v03.py`) PASS. `docs/validation/v0.4.md` et
+`v0.3.md` régénérés par le script validateur.
+
+En attente pour le landing : CI distante verte sur la branche publiée, puis
+réconciliation du correctif adaptateur avec `main` (`d160ad3` vs `9106713`)
+
+## Reprise en main — rectification de l'état SIGINT
+
+La CI de `2b22558` (run `38923701495`) échoue toujours sur
+`cancel_sigint_preserves_streamed_arrivals` sous Linux après 120 s ;
+macOS est annulé. L'annonce de résolution ci-dessus était prématurée :
+la régression de parsing ne prouve pas la résolution du blocage CLI.
+Aucun landing sur main n'a été effectué.
+
+Le probe temporaire `cancel_probe.rs`, dépendant de fichiers `/tmp`, est
+retiré. Les reproductions précédentes et les captures contradictoires ne
+justifient pas une attribution définitive à Z3, aux signaux, à la persistance
+ou à `thread::scope`. Prochaine étape : un diagnostic ciblé de la disposition
+SIGINT et du drapeau d'annulation pendant un appel Z3, sans nouvelle campagne
+de charge ni publication avant preuve.
+
+### Preuve ciblée obtenue : Z3 remplace le gestionnaire SIGINT
+
+Le test `solving_preserves_application_sigint_handler` observe la disposition
+SIGINT pendant un vrai `check` de pigeonhole : FAIL avant correctif, PASS après
+désactivation du paramètre Z3 `ctrl_c`. Z3 ne doit pas consommer le signal à
+la place de signal-hook, sinon le drapeau SKE reste faux et l'exploration
+continue. Le watchdog reste responsable de l'interruption native.
+
+Exécuté : `cargo test -p ske-solver` (12 tests PASS),
+`cargo test -p ske-cli --test cancel_sigint` (3 exécutions PASS),
+`cargo clippy --workspace --all-targets -- -D warnings` (PASS).
+Le formatage du nouveau test a été corrigé après fmt --check.
+Changements locaux non publiés ; CI distante et landing toujours en attente.
+
+## Correction de l'échec GitHub Actions — adaptateur Linux
+
+Demande : vérifier et corriger le workflow distant. Worktree repris propre
+sur `main` / `8004d2f`. Les logs des runs `38878648861` (main) et
+`38900342322` (ske/implementation, v0.4 distant) montrent le même échec
+Ubuntu : le test mémoire reçoit `E_RECORD_ORDER` plutôt que `E_ADAPTER_LIMIT`.
+
+Cause : EOF remonté avant vérification de la sortie non nulle de l'adaptateur
+(allocation refusée sous `prlimit` Linux). Correction dans le lanceur :
+après EOF, attendre le statut sous watchdog avant classification ; garder
+le rejet immédiat des autres erreurs de trame. Trois régressions ajoutées,
+dont une reproduite rouge avant le correctif.
+
+Validation macOS : fmt, Clippy strict, 33 tests ske-ingest, workspace
+`--locked` et `./scripts/verify.sh` PASS (`VERIFY OK v0.3`). Aucun test ignoré.
+Rapport : `docs/validation/ci-adapter-exit.md` ; logs locaux :
+`target/validation-ci/`. Linux corrigé et CI distante à confirmer après
+publication autorisée. Aucun push/merge, aucun changement v0.4 récupéré.
+
+### Confirmation CI et demande d'intégration
+
+Après autorisation explicite `/land`, correctif `d160ad3` publié sur
+`fix/adapter-eof-exit-status`. Run GitHub `38901608478` : **SUCCESS**,
+jobs Ubuntu et macOS verts, tests workspace locked et workflow de conformité
+complets inclus. Le défaut mémoire Linux est donc confirmé corrigé à distance.
+Intégration vers `main` engagée après ce résultat ; aucun changement de la
+branche distante `ske/implementation` (v0.4).
+
+## Landing repris — réconciliation avec main
+
+Demande explicite `/land`. Fusion de `origin/main` (`02df44f`) dans
+`ske/implementation`, sans réécriture d'historique. La règle EOF de `d160ad3`
+remplace le délai de grâce de `9106713` : une erreur hors EOF reste une erreur
+de protocole immédiate ; après EOF, la sortie du processus est attendue sous
+surveillance des limites existantes. Les régressions des deux branches sont
+conservées. Les deux sections concurrentes du journal sont conservées.
+Validation locale complète puis CI Linux/macOS requises avant avance de main.
+
+### Portabilité du parsing révélée par la CI du candidat
+
+Le candidat `067d28d` passe le test CLI SIGINT sur Linux, mais le run
+`38936050127` échoue sur la nouvelle régression
+`chunked_parsing_preserves_declarations_and_assertions` : le Z3 Linux ne
+conserve pas les déclarations entre appels `from_string`, contrairement au
+Z3 local. Ce test n'est ni ignoré ni affaibli.
+
+Correction : parser chaque lot dans un solveur temporaire neuf, en rejouant
+le préambule déclaratif, puis transférer ses assertions au solveur résultat.
+Aucune dépendance à un état de parseur conservé entre appels. Les scripts
+multilignes, avec commandes d'état ou déclarations intercalées, restent parsés
+en un seul appel pour conserver leur ordre et leur sémantique.
+Limite explicite : les lots bornent les assertions, pas le coût d'une commande
+individuelle ni du préambule (rejoué pour chaque lot).
+
+Tests locaux solveur : 14 PASS, dont définitions entre lots, termes multilignes
+et push/pop ; Clippy strict workspace et formatage PASS avant publication.
+La validation complète interrompue n'a pas donné de résultat final AC-0.4-14 ;
+elle doit être rejouée sur ce correctif. Main toujours inchangée.
+
+## Validation finale du candidat de landing v0.4
+
+Code candidat `6b3cfda`, après fusion de main `02df44f` dans `e8666d3`.
+CI https://github.com/psyllos/ske/actions/runs/38937118281 :
+SUCCESS Linux et macOS, formatage, Clippy, `cargo test --workspace --locked`
+et `./scripts/verify.sh` compris, sans sérialisation Rust imposée.
+
+La validation locale par défaut a d'abord échoué sur deux tests adaptateur :
+`adapter_limits_invalid_frame_does_not_wait_for_child_exit` (délai de 2 s)
+et `adapter_limits_timeout_kills_descendants_holding_pipes` (fichier PID
+absent). Aucun correctif produit supplémentaire, délai augmenté ou test
+ignoré pour contourner ces échecs.
+
+Relance contrôlée :
+`RUST_TEST_THREADS=1 python3 scripts/validate-v04.py` — exit 0,
+14/14 v0.4 + 42/42 v0.1 + 25/25 v0.2 + 29/29 v0.3 PASS.
+Les quatre results.json sont vérifiés, pas seulement la dernière ligne.
+Durée environ 25 minutes ; journaux dans `target/land/validate-v04-serial.log`
+et `target/validation-v0*/`. Les rapports régénérés héritent explicitement
+du mode séquentiel et ne prétendent pas annuler l'échec local précédent.
+
+Coût constaté des validateurs : AC-0.4-14 appelle verify.sh puis v0.3,
+qui rappelle verify.sh puis v0.2, qui rappelle verify.sh puis v0.1,
+qui rappelle verify.sh. Quatre workflows complets, plus les AC spécifiques,
+avec sortie capturée à chaque niveau. À améliorer séparément par orchestration
+unique et preuves communes explicites, jamais par réutilisation silencieuse
+de vieux rapports. Les tests adaptateur sensibles à la contention restent
+également un suivi distinct.
+
+Landing `/land` autorisé : rapports consolidés puis avance rapide de main
+uniquement après CI verte du candidat final. Aucun changement normatif,
+golden, migration ou fichier généré ; v0.5 non commencée dans ce thread.

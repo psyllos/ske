@@ -101,79 +101,196 @@ impl Z3Solver {
         let _seeds = Seeds::set(budget.seed);
         z3::with_z3_config(&Config::new(), || {
             let solver = z3::Solver::new();
-            solver.from_string(query.smtlib.as_bytes());
             let ctx = Context::thread_local();
-            // z3.rs disables the default aborting error handler, but its
-            // from_string API does not expose parser failure. Inspect it before
-            // checking, otherwise malformed text could look satisfiable.
-            let parse_error = unsafe {
-                let raw = ctx.get_z3_context();
-                let code = z3_sys::Z3_get_error_code(raw);
-                if code == z3_sys::ErrorCode::Ok {
-                    None
-                } else {
-                    Some(
-                        CStr::from_ptr(z3_sys::Z3_get_error_msg(raw, code))
-                            .to_string_lossy()
-                            .into_owned(),
-                    )
-                }
-            };
-            if let Some(e) = parse_error {
-                return unknown(format!("SOLVER_UNAVAILABLE: {e}"));
-            }
-            let mut params = Params::new();
-            params.set_u32("random_seed", budget.seed);
-            params.set_u32("rlimit", rlimit);
-            params.set_u32("timeout", timeout);
-            // Apply after parsing so persisted set-options cannot override budget.
-            solver.set_params(&params);
-            let parameter_error = unsafe {
-                let raw = ctx.get_z3_context();
-                let code = z3_sys::Z3_get_error_code(raw);
-                if code == z3_sys::ErrorCode::Ok {
-                    None
-                } else {
-                    Some(
-                        CStr::from_ptr(z3_sys::Z3_get_error_msg(raw, code))
-                            .to_string_lossy()
-                            .into_owned(),
-                    )
-                }
-            };
-            if let Some(e) = parameter_error {
-                return unknown(format!("SOLVER_UNAVAILABLE: parameters: {e}"));
-            }
             let deadline = (budget.wall_timeout_ms != 0)
                 .then(|| Instant::now() + Duration::from_millis(budget.wall_timeout_ms));
+            // z3.rs disables the default aborting error handler, but its
+            // from_string API does not expose parser failure. Inspect the error
+            // code after each parse, otherwise malformed text could look
+            // satisfiable.
+            let native_error = || -> Option<String> {
+                unsafe {
+                    let raw = ctx.get_z3_context();
+                    let code = z3_sys::Z3_get_error_code(raw);
+                    if code == z3_sys::ErrorCode::Ok {
+                        None
+                    } else {
+                        Some(
+                            CStr::from_ptr(z3_sys::Z3_get_error_msg(raw, code))
+                                .to_string_lossy()
+                                .into_owned(),
+                        )
+                    }
+                }
+            };
+            // Old Z3 versions do not retain declarations between from_string
+            // calls. Parse batches in fresh temporary solvers, replaying the
+            // declaration/definition prelude, then copy their assertions into
+            // the result solver. Never depend on parser state across calls.
+            // This bounds assertion batches, not an individual command or the
+            // prelude. Other SMT-LIB scripts retain the single-parse path.
+            const FEED_CHUNK_LINES: usize = 16_384;
+            let native = |cancel: Option<&(dyn Fn() -> bool + Sync)>,
+                          deadline: Option<Instant>|
+             -> Result<SatResult, CheckResult> {
+                match cancel {
+                    Some(cancel) => {
+                        let mut lines = 0usize;
+                        let mut chunkable = true;
+                        let mut seen_assertion = false;
+                        for line in query.smtlib.lines() {
+                            if cancel() || deadline.is_some_and(|d| Instant::now() >= d) {
+                                return Err(unknown("interrupted"));
+                            }
+                            lines += 1;
+                            let line = line.trim();
+                            // The SKE encoder emits complete, unquoted commands
+                            // on each line. Fall back for comments, strings,
+                            // multiline terms, or stateful commands (push/pop).
+                            let mut depth = 0i64;
+                            let mut commands = 0usize;
+                            let balanced = line.bytes().all(|byte| {
+                                match byte {
+                                    b'(' => {
+                                        if depth == 0 {
+                                            commands += 1;
+                                        }
+                                        depth += 1;
+                                    }
+                                    b')' => depth -= 1,
+                                    _ => {}
+                                }
+                                depth >= 0
+                            }) && depth == 0;
+                            if line.starts_with("(assert ") {
+                                seen_assertion = true;
+                            } else if seen_assertion && !line.is_empty() && line != "(check-sat)" {
+                                // Replaying a later declaration before earlier
+                                // assertions could accept an invalid forward
+                                // reference. Preserve command order instead.
+                                chunkable = false;
+                            }
+                            chunkable &= balanced
+                                && (line.is_empty() || commands == 1)
+                                && !line.contains(['"', '|', ';'])
+                                && (line.is_empty()
+                                    || line.starts_with("(declare-")
+                                    || line.starts_with("(define-fun ")
+                                    || line.starts_with("(set-logic ")
+                                    || line == "(set-option :produce-models true)"
+                                    || line.starts_with("(assert ")
+                                    || line == "(check-sat)");
+                        }
+                        if lines <= FEED_CHUNK_LINES || !chunkable {
+                            solver.from_string(query.smtlib.as_bytes());
+                            if let Some(e) = native_error() {
+                                return Err(unknown(format!("SOLVER_UNAVAILABLE: {e}")));
+                            }
+                        } else {
+                            let mut prelude = String::new();
+                            let mut chunk = String::new();
+                            let mut fed = 0usize;
+                            let parse_batch =
+                                |prelude: &str, assertions: &str| -> Result<(), CheckResult> {
+                                    let parsed = z3::Solver::new();
+                                    parsed.from_string(format!("{prelude}{assertions}").as_bytes());
+                                    if let Some(e) = native_error() {
+                                        return Err(unknown(format!("SOLVER_UNAVAILABLE: {e}")));
+                                    }
+                                    for assertion in parsed.get_assertions() {
+                                        if cancel() || deadline.is_some_and(|d| Instant::now() >= d)
+                                        {
+                                            return Err(unknown("interrupted"));
+                                        }
+                                        solver.assert(assertion);
+                                    }
+                                    Ok(())
+                                };
+                            for line in query.smtlib.split('\n') {
+                                let line = line.trim();
+                                if line.is_empty() || line == "(check-sat)" {
+                                    continue;
+                                }
+                                if cancel() || deadline.is_some_and(|d| Instant::now() >= d) {
+                                    // Stop feeding rather than checking a partial
+                                    // assertion set; the caller's cancellation
+                                    // handling takes over from here.
+                                    return Err(unknown("interrupted"));
+                                }
+                                if !line.starts_with("(assert ") {
+                                    prelude.push_str(line);
+                                    prelude.push('\n');
+                                    continue;
+                                }
+                                chunk.push_str(line);
+                                chunk.push('\n');
+                                fed += 1;
+                                if fed >= FEED_CHUNK_LINES {
+                                    parse_batch(&prelude, &chunk)?;
+                                    chunk.clear();
+                                    fed = 0;
+                                }
+                            }
+                            // Also validate a declaration-only script or a
+                            // prelude changed after the last full batch.
+                            parse_batch(&prelude, &chunk)?;
+                        }
+                    }
+                    None => {
+                        solver.from_string(query.smtlib.as_bytes());
+                        if let Some(e) = native_error() {
+                            return Err(unknown(format!("SOLVER_UNAVAILABLE: {e}")));
+                        }
+                    }
+                }
+                let mut params = Params::new();
+                params.set_u32("random_seed", budget.seed);
+                params.set_u32("rlimit", rlimit);
+                params.set_u32("timeout", timeout);
+                // SKE owns SIGINT through signal-hook. Z3's default ctrl_c
+                // handler consumes SIGINT during check without setting SKE's
+                // cancellation flag. The watchdog handles native interruption.
+                params.set_bool("ctrl_c", false);
+                // Apply after parsing so persisted set-options cannot override budget.
+                solver.set_params(&params);
+                if let Some(e) = native_error() {
+                    return Err(unknown(format!("SOLVER_UNAVAILABLE: parameters: {e}")));
+                }
+                Ok(solver.check())
+            };
             // A watchdog interrupts the native context when the wall budget runs
-            // out or the engine has been cancelled. Z3's own `timeout` parameter
-            // is only honored at tactic boundaries and can silently overrun under
-            // load/rewriting; `ContextHandle::interrupt` aborts the current check
-            // promptly and is Send+Sync for cross-thread use.
-            let watchdog = cancel.is_some().then(|| {
-                let handle = ctx.handle();
-                let done = AtomicBool::new(false);
-                let alive = thread::scope(|scope| {
-                    scope.spawn(|| loop {
-                        if done.load(Ordering::Relaxed) {
-                            return;
-                        }
-                        let overdue = deadline.is_some_and(|d| Instant::now() >= d);
-                        let cancelled = cancel.is_some_and(|c| c());
-                        if overdue || cancelled {
-                            handle.interrupt();
-                            return;
-                        }
-                        thread::sleep(Duration::from_millis(10));
-                    });
-                    let result = solver.check();
-                    done.store(true, Ordering::Relaxed);
-                    result
-                });
-                alive
-            });
-            let result = watchdog.unwrap_or_else(|| solver.check());
+            // out or the engine has been cancelled. `ContextHandle::interrupt`
+            // aborts the current native operation promptly and is Send+Sync for
+            // cross-thread use. It keeps re-arming until `native` returns: an
+            // interrupt delivered before the active operation (or between parser
+            // commands) can otherwise be lost, leaving the check uninterrupted
+            // even though the engine cancelled.
+            let sat = match cancel {
+                Some(cancel) => {
+                    let handle = ctx.handle();
+                    let done = AtomicBool::new(false);
+                    thread::scope(|scope| {
+                        scope.spawn(|| loop {
+                            if done.load(Ordering::Relaxed) {
+                                return;
+                            }
+                            let overdue = deadline.is_some_and(|d| Instant::now() >= d);
+                            if overdue || cancel() {
+                                handle.interrupt();
+                            }
+                            thread::sleep(Duration::from_millis(10));
+                        });
+                        let sat = native(Some(cancel), deadline);
+                        done.store(true, Ordering::Relaxed);
+                        sat
+                    })
+                }
+                None => native(None, deadline),
+            };
+            let result = match sat {
+                Err(check_result) => return check_result,
+                Ok(sat) => sat,
+            };
             match result {
                 SatResult::Unsat => CheckResult::Unsat,
                 SatResult::Unknown => map_unknown_reason(

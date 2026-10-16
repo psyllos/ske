@@ -23,6 +23,14 @@ après v0.1 → v0.2 → v0.3, avec délégation et état durable.
   Voir `docs/validation/v0.3.md` et le dernier journal.
 - v0.4 : validée, 14 AC PASS ; non-régression 42 AC v0.1 + 25 AC v0.2 +
   29 AC v0.3. Voir `docs/validation/v0.4.md` et la dernière section du journal.
+  Blocage SIGINT résolu : Z3 ne remplace plus le gestionnaire SIGINT de SKE
+  (`ctrl_c=false`, régression FAIL avant / PASS après). Le parsing par lots
+  est portable entre les versions système de Z3. CI Linux/macOS de `6b3cfda`
+  verte (run `38937118281`). Validation locale complète séquentielle :
+  `RUST_TEST_THREADS=1 python3 scripts/validate-v04.py`, 110 AC PASS.
+  Une relance locale en parallélisme par défaut a échoué sur deux tests
+  adaptateur sensibles aux délais ; ce résultat reste documenté dans
+  `docs/validation/BLOCKED-v0.4-land-ci.md`.
 
 Reprise après v0.4 :
 
