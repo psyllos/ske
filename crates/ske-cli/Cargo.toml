@@ -13,6 +13,7 @@ ske-common.workspace = true
 ske-query.workspace = true
 clap.workspace = true
 serde_json.workspace = true
+serde_yaml = "=0.9.34"
 
 [dev-dependencies]
 rusqlite.workspace = true

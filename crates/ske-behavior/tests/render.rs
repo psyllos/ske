@@ -251,6 +251,7 @@ fn row(
         effects: String::new(),
         precision: "EXACT".into(),
         fingerprint: "fp".into(),
+        summary_case_id: None,
     }
 }
 
@@ -273,6 +274,7 @@ fn crow(
         precision: input.precision,
         fingerprint: input.fingerprint,
         referenced_outcomes: Vec::new(),
+        summary_case_id: None,
     }
 }
 

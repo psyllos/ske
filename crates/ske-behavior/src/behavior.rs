@@ -26,6 +26,8 @@ pub struct BehaviorCaseRowInput {
     pub precision: String,
     /// A stable fingerprint for tie-breaking only.
     pub fingerprint: String,
+    /// Origin summary case id kept for the DERIVED_FROM evidence anchor.
+    pub summary_case_id: Option<i64>,
 }
 
 /// A grouped behavior case: dedup merges rows conservatively (§7.2 step 3).
@@ -42,6 +44,8 @@ pub struct BehaviorCaseRow {
     pub fingerprint: String,
     /// Union of referenced IR-outcome path labels after dedup.
     pub referenced_outcomes: Vec<String>,
+    /// Origin summary case id (first source; kept for DERIVED_FROM evidence).
+    pub summary_case_id: Option<i64>,
 }
 
 /// §7.2 step 4 ordering comparator key: `(span, ir_path, fingerprint)`, where
@@ -116,6 +120,7 @@ struct BehavGroup {
     precision: String,
     fingerprint: String,
     referenced_outcomes: std::collections::BTreeSet<String>,
+    summary_case_id: Option<i64>,
 }
 
 impl BehavGroup {
@@ -133,6 +138,7 @@ impl BehavGroup {
             precision: input.precision,
             fingerprint: input.fingerprint,
             referenced_outcomes,
+            summary_case_id: input.summary_case_id,
         }
     }
     fn merge(&mut self, other: BehavGroup) {
@@ -149,6 +155,9 @@ impl BehavGroup {
         self.ir_path.extend(other.ir_path);
         self.ir_path.sort();
         self.ir_path.dedup();
+        if self.summary_case_id.is_none() {
+            self.summary_case_id = other.summary_case_id;
+        }
     }
     fn finish(self) -> BehaviorCaseRow {
         BehaviorCaseRow {
@@ -162,6 +171,7 @@ impl BehavGroup {
             precision: self.precision,
             fingerprint: self.fingerprint,
             referenced_outcomes: self.referenced_outcomes.into_iter().collect(),
+            summary_case_id: self.summary_case_id,
         }
     }
 }

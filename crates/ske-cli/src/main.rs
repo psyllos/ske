@@ -9,6 +9,7 @@ mod consent;
 enum Format {
     Text,
     Json,
+    Yaml,
 }
 
 #[derive(Parser)]
@@ -61,6 +62,14 @@ enum Command {
     Paths {
         #[command(subcommand)]
         command: Paths,
+    },
+    Behaviors {
+        #[command(subcommand)]
+        command: Behaviors,
+    },
+    Rules {
+        #[command(subcommand)]
+        command: Rules,
     },
 }
 
@@ -156,6 +165,28 @@ enum Paths {
         max_paths: Option<usize>,
         #[arg(long)]
         max_nodes: Option<usize>,
+    },
+}
+#[derive(Subcommand)]
+enum Behaviors {
+    Reconstruct {
+        #[arg(long)]
+        entry: String,
+    },
+}
+#[derive(Subcommand)]
+enum Rules {
+    List {
+        #[arg(long)]
+        with_evidence: bool,
+    },
+    StaleCheck {
+        #[arg(long)]
+        repository: String,
+        #[arg(long)]
+        from: String,
+        #[arg(long)]
+        to: String,
     },
 }
 
@@ -339,6 +370,28 @@ fn execute(cli: &Cli) -> Result<(Value, i32)> {
             cli.limit,
             cli.offset,
         )?,
+        Command::Behaviors {
+            command: Behaviors::Reconstruct { entry },
+        } => {
+            query.reconstruct_behaviors(&cli.snapshot, repository, entry, cli.limit, cli.offset)?
+        }
+        Command::Rules {
+            command: Rules::List { with_evidence },
+        } => query.list_rules(
+            &cli.snapshot,
+            repository,
+            *with_evidence,
+            cli.limit,
+            cli.offset,
+        )?,
+        Command::Rules {
+            command:
+                Rules::StaleCheck {
+                    repository: repo_name,
+                    from,
+                    to,
+                },
+        } => query.rules_stale_check(repo_name, from, to)?,
     };
     Ok((value, status))
 }
@@ -387,6 +440,9 @@ fn main() {
         Ok((value, status)) => {
             if cli.format == Format::Json {
                 println!("{value}");
+            } else if cli.format == Format::Yaml {
+                let yaml = serde_yaml::to_string(&value).expect("YAML value");
+                print!("{yaml}");
             } else if let Some(message) = value.get("message").and_then(Value::as_str) {
                 println!("{message}");
             } else {

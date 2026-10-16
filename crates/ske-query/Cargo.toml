@@ -14,6 +14,7 @@ toml = "=1.1.8"
 ske-cir.workspace = true
 ske-symbolic = { path = "../ske-symbolic" }
 ske-summary = { path = "../ske-summary" }
+ske-behavior = { path = "../ske-behavior" }
 ske-solver = { path = "../ske-solver" }
 ske-verify = { path = "../ske-verify" }
 prost.workspace = true

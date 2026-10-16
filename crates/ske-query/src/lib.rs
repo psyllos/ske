@@ -10,6 +10,7 @@ mod analysis;
 pub mod analysis_config;
 mod analysis_load;
 mod analysis_read;
+mod behavior;
 mod callgraph;
 mod summaries;
 #[cfg(test)]
@@ -61,6 +62,11 @@ fn page(limit: usize, offset: usize, total: usize) -> Value {
     json!({"limit":limit,"offset":offset,"total":total,"truncated":offset.saturating_add(limit)<total})
 }
 const SPAN_SQL:&str="SELECT sf.path||':'||ss.start_line||':'||ss.start_column||'-'||ss.end_line||':'||ss.end_column AS span FROM source_spans ss JOIN source_files sf ON sf.id=ss.source_file_id WHERE ss.id=?1";
+
+/// Module-level span text for behavior/evidence rendering.
+pub(crate) fn span_text(db: &Connection, span_id: i64) -> Result<Value> {
+    one(db, SPAN_SQL, [span_id]).map(|v| v["span"].clone())
+}
 
 impl Query {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
@@ -411,5 +417,36 @@ impl Query {
         Ok(
             json!({"snapshot_id":sid,"function":function["function"],"unit_key":function["unit_key"],"inventory":inventory,"analysis":null,"source_decisions":decisions,"ir_outcomes":ir,"page":page(limit,offset,total)}),
         )
+    }
+    /// Reconstruct behaviors + rules + evidence for an entry function into the
+    /// summary's snapshot (v0.5). Returns the JSON DTO.
+    pub fn reconstruct_behaviors(
+        &self,
+        snapshot: &str,
+        repository: Option<&str>,
+        entry: &str,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Value> {
+        let sid = self.snapshot(snapshot, repository)?;
+        let (function, _) = self.function(snapshot, repository, entry)?;
+        behavior::reconstruct(self.db(), sid, function, limit, offset)
+    }
+    /// List functional rules for a snapshot, optionally with evidence (v0.5).
+    pub fn list_rules(
+        &self,
+        snapshot: &str,
+        repository: Option<&str>,
+        with_evidence: bool,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Value> {
+        let sid = self.snapshot(snapshot, repository)?;
+        behavior::list_rules(self.db(), sid, with_evidence, limit, offset)
+    }
+    /// Mark rules from snapshot A stale when their function changed or vanished
+    /// in snapshot B of the same repository (v0.5, §13).
+    pub fn rules_stale_check(&self, repository: &str, from: &str, to: &str) -> Result<Value> {
+        behavior::stale_check(self.db(), repository, from, to)
     }
 }

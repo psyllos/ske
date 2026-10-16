@@ -719,3 +719,21 @@ globles `init:{Global("…")}@n:havoc#k`, pointees
 Prochaine étape : plan de modifications détaillé, lots délégables, puis
 implémentation / tests / migration / validation chronométrés.
 
+### Délégation v0.5 (lots indépendants)
+
+Demande explicite du commanditaire : déléguer les lots indépendants. Deux lots
+genuinement indépendants et isolés ont été confiés à des sous-agents worker
+(worktrees isolés) pendant que le coordinateur intègre le cœur couplé :
+
+- Lot A : crate pur `ske-behavior` (rendu R1–R6 + extraction/dedup/ordering +
+tests) — thread `ksQQEfcnmHasRuOdMYFaCCg3kpLOABKLXpIBxBDZiRjivQ9OQqTS_tRBC-14`.
+- Lot B : migration `0002_capabilities.sql` + tests storage (AC-0.5-13) —
+thread `ksQQEfcnmHasRuOdMYFaCCg3kpLOABKPupIBxBDZiRjivQ9OQqTS_tRBC-14`.
+
+Leçon v0.4 (6/6 sous-agents vides) : ne pas dépendre des livraisons pour la
+progression. Le coordinateur implémente directement la persistance
+behavior_*, l’extension de `ske-query` (reconstruct_behaviors, list_rules,
+stale-check, copie-sur-réutilisation), le CLI, le harness et la docs ; si les
+sous-agents reviennent vides, leurs lots seront repris directement de la même
+manière. Fusion des worktrees a posteriori via `merge_worktrees`.
+
