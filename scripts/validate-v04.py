@@ -89,7 +89,7 @@ def main():
         for version, expected in [("v01", 42), ("v02", 25), ("v03", 29)]:
             data = json.loads((ROOT / f"target/validation-{version}/results.json").read_text())
             assert len(data) == expected and all(r["status"] == "PASS" for r in data), version
-    check(14, "./scripts/verify.sh && SKE_EXPECT_VERIFY_VERSION=v0.4 python3 scripts/validate-v03.py",
+    check(14, "./scripts/verify.sh && SKE_INHERIT_VERIFY=1 SKE_EXPECT_VERIFY_VERSION=v0.4 python3 scripts/validate-v03.py",
           validator=regression)
     rows = ["# Validation v0.4", "", "Commandes exécutées par `python3 scripts/validate-v04.py`.",
             "Logs complets locaux : `target/validation-v04/AC-0.4-*.log` et `paths-cli.log`.", "",
