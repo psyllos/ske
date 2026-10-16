@@ -1,0 +1,13 @@
+[package]
+name = "ske-cir"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+ske-common.workspace = true
+prost.workspace = true
+serde_json.workspace = true
+
+[build-dependencies]
+prost-build.workspace = true
+protoc-bin-vendored.workspace = true

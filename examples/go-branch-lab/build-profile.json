@@ -1,0 +1,12 @@
+{
+  "profile_version": 1,
+  "language": "go",
+  "go_version": null,
+  "goos": "linux",
+  "goarch": "amd64",
+  "tags": [],
+  "include_tests": false,
+  "cgo": false,
+  "patterns": ["./..."],
+  "go_work": null
+}

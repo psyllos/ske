@@ -1,0 +1,6 @@
+{
+  "function":"example.DaySwitch",
+  "source_decisions":[{"id":"sd0","kind":"SWITCH","cond_text":"n","parent":null,"outcomes":["CASE:0","CASE:1","DEFAULT"]}],
+  "properties":["P-LINK-ALL","P-NO-HEUR"],
+  "diagnostics_forbidden_severity":["WARNING","ERROR"]
+}

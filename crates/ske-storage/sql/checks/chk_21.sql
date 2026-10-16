@@ -1,0 +1,1 @@
+SELECT a.id FROM outcome_arrivals a JOIN analysis_runs r ON r.id=a.analysis_run_id JOIN ir_outcomes o ON o.id=a.ir_outcome_id JOIN ir_decisions d ON d.id=o.decision_id JOIN instructions i ON i.id=d.terminator_instruction_id JOIN basic_blocks b ON b.id=i.block_id JOIN functions f ON f.id=b.function_id JOIN symbols s ON s.id=f.symbol_id WHERE s.snapshot_id<>r.snapshot_id;

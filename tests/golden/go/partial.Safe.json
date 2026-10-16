@@ -1,0 +1,1 @@
+{"function":"example/partial.Safe","source_decisions":[],"properties":["P-NO-HEUR"],"diagnostics_required":["DEFER_UNMODELED"],"diagnostics_forbidden_severity":["ERROR"]}

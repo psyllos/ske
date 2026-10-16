@@ -1,0 +1,9 @@
+[package]
+name = "ske-symbolic"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+ske-cir.workspace = true
+ske-common.workspace = true
+ske-solver = { path = "../ske-solver" }

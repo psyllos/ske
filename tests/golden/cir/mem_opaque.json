@@ -1,0 +1,11 @@
+{
+  "function":"example.MemOpaque",
+  "source_decisions":[
+    {"id":"example.MemOpaque/sd0","kind":"IF","cond_text":"*p < 0","parent":null,"outcomes":["TRUE","FALSE"]},
+    {"id":"example.MemOpaque/sd1","kind":"IF","cond_text":"*p < -10","parent":null,"outcomes":["TRUE","FALSE"]}
+  ],
+  "ir_decisions":2,
+  "properties":["P-LINK-ALL","P-NO-HEUR"],
+  "diagnostics_forbidden_severity":["WARNING","ERROR"],
+  "counts":{"source_files":1,"source_spans":7,"cir_types":6,"symbols":3,"functions":1,"values_ir":11,"basic_blocks":5,"instructions":11,"instruction_operands":13,"phi_inputs":0,"control_edges":4,"control_edge_case_values":0,"source_decisions":2,"source_outcomes":4,"ir_decisions":2,"ir_outcomes":4,"source_ir_links":4,"source_outcome_activation_cases":4,"source_outcome_activation_terms":4,"call_sites":1,"call_targets":0,"diagnostics":0}
+}

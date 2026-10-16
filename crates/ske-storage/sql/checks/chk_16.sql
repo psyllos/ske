@@ -1,0 +1,1 @@
+SELECT r.id FROM branch_analysis_results r JOIN analysis_runs a ON a.id=r.analysis_run_id JOIN ir_outcomes o ON o.id=r.ir_outcome_id JOIN ir_decisions d ON d.id=o.decision_id JOIN instructions i ON i.id=d.terminator_instruction_id JOIN basic_blocks b ON b.id=i.block_id JOIN functions f ON f.id=b.function_id JOIN symbols s ON s.id=f.symbol_id WHERE s.snapshot_id<>a.snapshot_id;

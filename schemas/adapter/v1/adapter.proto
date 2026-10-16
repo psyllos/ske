@@ -1,0 +1,53 @@
+syntax = "proto3";
+package ske.adapter.v1;
+import "cir/v1/cir.proto";
+
+message Limits {
+  uint64 max_message_bytes = 1;     // défaut 16777216
+  uint64 max_messages = 2;          // défaut 50000000
+  uint64 timeout_ms = 3;            // défaut 600000
+  uint64 max_memory_mb = 4;         // défaut 4096
+}
+
+message ListUnitsRequest {
+  string project_root = 1;          // chemin absolu
+  string build_profile_json = 2;    // contenu de build-profile.json (§11.4)
+  Limits limits = 3;
+}
+
+message ExtractUnitRequest {
+  string project_root = 1;
+  string build_profile_json = 2;
+  string unit_key = 3;
+  Limits limits = 4;
+}
+
+message AdapterRequest {
+  uint32 protocol_major = 1;        // 1
+  oneof body {
+    ListUnitsRequest list_units = 2;
+    ExtractUnitRequest extract_unit = 3;
+  }
+}
+
+message UnitDescriptor {
+  string unit_key = 1;
+  string language = 2;
+  repeated string source_paths = 3; // fichiers sources de l'unité (relatifs)
+}
+
+message ListUnitsDone {}
+
+message AdapterError {
+  string code = 1;                  // ex. TOOLCHAIN_MISSING, BUILD_PROFILE_INVALID
+  string message = 2;
+}
+
+message AdapterResponse {
+  oneof body {
+    UnitDescriptor unit = 1;        // réponse à list_units (0..n)
+    ListUnitsDone list_done = 2;    // termine list_units
+    ske.cir.v1.Record record = 3;   // réponse à extract_unit (Header en premier … EndUnit en dernier)
+    AdapterError error = 4;         // en cas d'échec ; puis le processus sort avec le code 1
+  }
+}

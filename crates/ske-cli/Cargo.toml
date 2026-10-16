@@ -1,0 +1,19 @@
+[package]
+name = "ske-cli"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "ske"
+path = "src/main.rs"
+
+[dependencies]
+signal-hook = "=0.4.5"
+ske-common.workspace = true
+ske-query.workspace = true
+clap.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+rusqlite.workspace = true
+tempfile.workspace = true

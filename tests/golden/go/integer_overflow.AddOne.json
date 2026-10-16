@@ -1,0 +1,7 @@
+{
+  "function":"example.AddOne",
+  "source_decisions":[{"id":"sd0","kind":"IF","cond_text":"y < x","parent":null,"outcomes":["TRUE","FALSE"]}],
+  "ir_decisions":1,
+  "properties":["P-LINK-ALL","P-NO-HEUR","P-OVERFLOW-width"],
+  "diagnostics_forbidden_severity":["WARNING","ERROR"]
+}

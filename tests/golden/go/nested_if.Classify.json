@@ -1,0 +1,10 @@
+{
+  "function":"example.Classify",
+  "source_decisions":[
+    {"id":"sd0","kind":"IF","cond_text":"a > 0","parent":null,"outcomes":["TRUE","FALSE"]},
+    {"id":"sd1","kind":"IF","cond_text":"b > 0","parent":null,"outcomes":["TRUE","FALSE"]}
+  ],
+  "ir_decisions":2,
+  "properties":["P-LINK-ALL","P-NO-HEUR"],
+  "diagnostics_forbidden_severity":["WARNING","ERROR"]
+}

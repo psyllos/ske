@@ -1,0 +1,1 @@
+SELECT e.terminator_instruction_id FROM control_edges e GROUP BY e.terminator_instruction_id HAVING COUNT(*)>=2 AND e.terminator_instruction_id NOT IN (SELECT terminator_instruction_id FROM ir_decisions);

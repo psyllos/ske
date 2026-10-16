@@ -1,0 +1,7 @@
+{
+  "function":"example.Pipe",
+  "source_decisions":[{"id":"sd0","kind":"SELECT","cond_text":"select","parent":null,"outcomes":["CASE:0","CASE:1"]}],
+  "properties":["P-LINK-ALL","P-NO-HEUR","P-CONC-Pipe"],
+  "diagnostics_required":["CONCURRENCY_PARTIAL"],
+  "diagnostics_forbidden_severity":["ERROR"]
+}

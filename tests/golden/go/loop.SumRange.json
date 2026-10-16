@@ -1,0 +1,6 @@
+{
+  "function":"example.SumRange",
+  "source_decisions":[{"id":"sd0","kind":"RANGE_ITERATION","cond_text":"xs","parent":null,"outcomes":["ENTER_BODY","EXIT"]}],
+  "properties":["P-LINK-ALL","P-NO-HEUR"],
+  "diagnostics_forbidden_severity":["WARNING","ERROR"]
+}

@@ -1,0 +1,1 @@
+SELECT s.id FROM symbols s JOIN source_spans sp ON sp.id=s.primary_span_id JOIN source_files sf ON sf.id=sp.source_file_id WHERE sf.snapshot_id<>s.snapshot_id UNION ALL SELECT d.id FROM source_decisions d JOIN source_spans sp ON sp.id=d.source_span_id JOIN source_files sf ON sf.id=sp.source_file_id WHERE sf.snapshot_id<>d.snapshot_id;

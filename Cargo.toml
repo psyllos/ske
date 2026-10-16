@@ -1,0 +1,24 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+
+[workspace.dependencies]
+ske-common = { path = "crates/ske-common" }
+ske-cir = { path = "crates/ske-cir" }
+ske-graph = { path = "crates/ske-graph" }
+ske-storage = { path = "crates/ske-storage" }
+ske-ingest = { path = "crates/ske-ingest" }
+ske-query = { path = "crates/ske-query" }
+prost = "=0.14.4"
+prost-build = "=0.14.4"
+protoc-bin-vendored = "=3.3.0"
+rusqlite = { version = "=0.40.2", features = ["bundled"] }
+sha2 = "=0.11.1"
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.154"
+clap = { version = "=4.6.7", features = ["derive", "env"] }
+tempfile = "=3.27.0"

@@ -1,0 +1,1 @@
+{"function":"example.Pipe$1","source_decisions":[],"properties":["P-NO-HEUR","P-CONC-Pipe"],"diagnostics_required":["CONCURRENCY_PARTIAL"],"diagnostics_forbidden_severity":["ERROR"]}

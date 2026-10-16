@@ -1,0 +1,1 @@
+{"function":"example.init","source_decisions":[],"ir_decisions":1,"properties":["P-NO-HEUR"],"diagnostics_required":["SYNTHETIC_FUNCTION"],"diagnostics_forbidden_severity":["WARNING","ERROR"]}

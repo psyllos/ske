@@ -1,0 +1,7 @@
+{
+  "function":"example.Day",
+  "source_decisions":[{"id":"sd0","kind":"SWITCH","cond_text":"n","parent":null,"outcomes":["CASE:0","CASE:1","DEFAULT"]}],
+  "ir_decisions":3,
+  "properties":["P-LINK-ALL","P-NO-HEUR","P-SWITCH-Day"],
+  "diagnostics_forbidden_severity":["WARNING","ERROR"]
+}

@@ -1,0 +1,8 @@
+{
+  "function":"example.DaySwitch",
+  "source_decisions":[{"id":"example.DaySwitch/sd0","kind":"SWITCH","cond_text":"n","parent":null,"outcomes":["CASE:0","CASE:1","DEFAULT"]}],
+  "ir_decisions":1,
+  "properties":["P-LINK-ALL","P-NO-HEUR"],
+  "diagnostics_forbidden_severity":["WARNING","ERROR"],
+  "counts":{"source_files":1,"source_spans":2,"cir_types":2,"symbols":2,"functions":1,"values_ir":7,"basic_blocks":4,"instructions":4,"instruction_operands":4,"phi_inputs":0,"control_edges":3,"control_edge_case_values":3,"source_decisions":1,"source_outcomes":3,"ir_decisions":1,"ir_outcomes":3,"source_ir_links":3,"source_outcome_activation_cases":3,"source_outcome_activation_terms":3,"call_sites":0,"call_targets":0,"diagnostics":0}
+}

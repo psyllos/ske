@@ -1,0 +1,11 @@
+{
+  "function":"example.OrDecision",
+  "source_decisions":[
+    {"id":"sd0","kind":"IF","cond_text":"a || b","parent":null,"outcomes":["TRUE","FALSE"]},
+    {"id":"sd1","kind":"LOGICAL_OPERAND","cond_text":"a","parent":"sd0","outcomes":["TRUE","FALSE"]},
+    {"id":"sd2","kind":"LOGICAL_OPERAND","cond_text":"b","parent":"sd0","outcomes":["TRUE","FALSE"]}
+  ],
+  "ir_decisions":2,
+  "properties":["P-LINK-ALL","P-NO-HEUR","P-ACT-OR"],
+  "diagnostics_forbidden_severity":["WARNING","ERROR"]
+}

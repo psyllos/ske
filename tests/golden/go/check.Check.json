@@ -1,0 +1,10 @@
+{
+  "function": "example.Check",
+  "source_decisions": [
+    {"id":"sd0","kind":"IF","cond_text":"age < 18","parent":null,"outcomes":["TRUE","FALSE"]},
+    {"id":"sd1","kind":"IF","cond_text":"!enabled","parent":null,"outcomes":["TRUE","FALSE"]}
+  ],
+  "ir_decisions": 2,
+  "properties": ["P-LINK-ALL","P-NO-HEUR","P-INVERT-Check"],
+  "diagnostics_forbidden_severity": ["WARNING","ERROR"]
+}

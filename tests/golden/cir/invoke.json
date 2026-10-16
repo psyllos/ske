@@ -1,0 +1,8 @@
+{
+  "function":"example.Try",
+  "source_decisions":[],
+  "ir_decisions":1,
+  "properties":[],
+  "diagnostics_forbidden_severity":["WARNING","ERROR"],
+  "counts":{"source_files":0,"source_spans":0,"cir_types":3,"symbols":3,"functions":2,"values_ir":3,"basic_blocks":3,"instructions":3,"instruction_operands":3,"phi_inputs":0,"control_edges":2,"control_edge_case_values":0,"source_decisions":0,"source_outcomes":0,"ir_decisions":1,"ir_outcomes":2,"source_ir_links":0,"source_outcome_activation_cases":0,"source_outcome_activation_terms":0,"call_sites":1,"call_targets":1,"diagnostics":0}
+}

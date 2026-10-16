@@ -1,0 +1,8 @@
+{
+  "function":"example.Adjusted",
+  "source_decisions":[{"id":"example.Adjusted/sd0","kind":"IF","cond_text":"x > 10","parent":null,"outcomes":["TRUE","FALSE"]}],
+  "ir_decisions":1,
+  "properties":["P-LINK-ALL","P-NO-HEUR"],
+  "diagnostics_forbidden_severity":["WARNING","ERROR"],
+  "counts":{"source_files":1,"source_spans":3,"cir_types":3,"symbols":2,"functions":1,"values_ir":7,"basic_blocks":3,"instructions":6,"instruction_operands":6,"phi_inputs":2,"control_edges":3,"control_edge_case_values":0,"source_decisions":1,"source_outcomes":2,"ir_decisions":1,"ir_outcomes":2,"source_ir_links":2,"source_outcome_activation_cases":2,"source_outcome_activation_terms":2,"call_sites":0,"call_targets":0,"diagnostics":0}
+}

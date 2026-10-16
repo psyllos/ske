@@ -1,0 +1,16 @@
+[package]
+name = "ske-ingest"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+ske-common.workspace = true
+ske-cir.workspace = true
+ske-storage.workspace = true
+ske-graph.workspace = true
+prost.workspace = true
+rusqlite.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

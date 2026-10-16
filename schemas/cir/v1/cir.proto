@@ -1,0 +1,264 @@
+syntax = "proto3";
+package ske.cir.v1;
+
+// Position source. start_line/start_column : 1-based. end_column est EXCLUSIF
+// (premier caractère après le span). Les colonnes comptent des OCTETS (une
+// tabulation vaut 1).
+message Span {
+  string path = 1;                  // relatif à la racine du projet, '/' comme séparateur
+  uint32 start_line = 2;
+  uint32 start_column = 3;
+  uint32 end_line = 4;
+  uint32 end_column = 5;
+}
+
+message Header {
+  uint32 cir_major = 1;             // doit valoir 1
+  uint32 cir_minor = 2;             // valeur de référence = 3 (inchangée en v1.4)
+  string adapter_name = 3;
+  string adapter_version = 4;
+  string language = 5;              // "go", "rust", "java"
+  string toolchain_version = 6;
+  string build_fingerprint = 7;     // sha256 hex de la configuration de build
+  string semantic_profile = 8;      // ex. "go-1.22-linux-amd64"
+  repeated string capability_flags = 9;
+}
+
+message UnitDef {
+  string unit_id = 1;
+  string unit_key = 2;              // unique dans le snapshot
+  string language = 3;
+}
+
+message SourceFileDef {
+  string path = 1;
+  string language = 2;
+  string content_sha256 = 3;        // sha256 hex minuscule du contenu exact
+}
+
+message LiteralValue {
+  oneof representation {
+    bool bool_value = 1;
+    bytes machine_bits_be = 2;      // motif binaire big-endian, ceil(width/8) octets
+    bytes string_bytes = 3;         // octets arbitraires (pas forcément UTF-8)
+    bool null_value = 4;            // uniquement à true
+  }
+}
+
+message PhiInput {
+  string predecessor_block_id = 1;
+  string value_id = 2;
+}
+
+message BinarySemantics {
+  string operator = 1;              // nom d'opcode du registre (informatif)
+  string overflow_mode = 2;         // WRAP | CHECKED | SATURATE | UNDEFINED
+  string signedness = 3;            // SIGNED | UNSIGNED | N_A
+}
+
+message CallSemantics {
+  string dispatch_kind = 1;         // STATIC | VIRTUAL | INTERFACE | TRAIT | REFLECTIVE | DYNAMIC | UNKNOWN
+  optional bool may_raise = 2;
+  optional bool may_mutate_memory = 3;
+  bool is_pure_proven = 4;          // vrai seulement si PROUVÉ pur (jamais par défaut)
+  bool world_closed = 5;            // vrai seulement si l'ensemble des cibles est prouvé fermé
+  bool is_referentially_transparent_proven = 6; // mêmes arguments + même état immuable => même résultat, sans effets ni exceptions
+}
+
+message MemorySemantics {
+  string access_kind = 1;           // LOAD | STORE | ALLOC | ADDRESS_OF
+  string address_space = 2;
+  string alias_class = 3;
+}
+
+message OpaqueSemantics {
+  string source_construct = 1;
+  string reason = 2;
+  optional bool may_mutate_memory = 3;
+  optional bool may_exit_abnormally = 4;
+}
+
+message FieldAccess {
+  uint32 field_index = 1;
+  string field_name = 2;
+}
+
+message TypeTest {
+  string target_type_id = 1;
+  bool comma_ok = 2;
+}
+
+message OperationPayload {
+  oneof details {
+    BinarySemantics binary = 1;
+    CallSemantics call = 2;
+    MemorySemantics memory = 3;
+    OpaqueSemantics opaque = 4;
+    FieldAccess field = 7;
+    TypeTest type_test = 8;
+  }
+  repeated PhiInput phi_inputs = 5;
+  string semantic_extension_id = 6;
+}
+
+message TypeDef {
+  string id = 1;
+  string kind = 2;                  // voir §4.2 ; inconnu => E_UNKNOWN_KIND
+  string canonical_descriptor = 3;
+  repeated string param_type_ids = 4;
+  uint32 bit_width = 5;
+  bool is_signed = 6;
+  bytes extra = 7;
+  repeated string component_names = 8;
+  bool nullable = 9;
+  repeated string result_type_ids = 10;
+}
+
+message SymbolDef {
+  string id = 1;
+  string owner_id = 2;              // symbole propriétaire (vide si racine)
+  string name = 3;
+  string qualified_name = 4;
+  string kind = 5;                  // PACKAGE | FUNCTION | METHOD | GLOBAL | TYPE | CONSTANT | OTHER
+  string type_id = 6;               // vide si sans type (PACKAGE)
+  repeated Span spans = 7;          // spans[0] = span primaire
+}
+
+message ValueDef {
+  string id = 1;
+  string function_id = 2;           // vide pour une valeur GLOBAL
+  string type_id = 3;
+  string role = 4;                  // PARAM | CONST | SSA | GLOBAL | MEMORY
+  LiteralValue literal = 5;         // seulement si role = CONST
+  string symbol_id = 6;             // seulement si role = GLOBAL
+  string name = 7;                  // nom source d'un PARAM (informatif ; sert au rendu des gardes)
+  optional uint32 param_index = 8;  // PARAM seulement ; présence obligatoire, 0 autorisé
+}
+
+message FunctionDef {
+  string id = 1;
+  string symbol_id = 2;
+  repeated string parameter_value_ids = 3;
+  repeated string return_type_ids = 4;
+  string entry_block_id = 5;        // vide ssi is_external
+  bool is_external = 6;
+}
+
+message BlockDef {
+  string id = 1;
+  string function_id = 2;
+  uint32 ordinal = 3;
+}
+
+message InstructionDef {
+  string id = 1;
+  string block_id = 2;
+  uint32 ordinal = 3;
+  string opcode = 4;
+  string result_value_id = 5;
+  repeated string operand_value_ids = 6;
+  OperationPayload payload = 7;
+  repeated Span spans = 8;          // spans[0] = span primaire
+  bool is_terminator = 9;
+}
+
+message ControlEdgeDef {
+  string id = 1;
+  string source_block_id = 2;
+  string target_block_id = 3;
+  string terminator_instruction_id = 4;
+  uint32 outcome_ordinal = 5;
+  string outcome_label = 6;         // voir §4.7
+  string guard_value_id = 7;        // BRANCH uniquement
+  bool guard_negated = 8;
+  string edge_kind = 9;             // voir §4.7
+  repeated string case_value_ids = 10; // SWITCH_CASE uniquement
+  string exception_filter_type_id = 11; // EXCEPTION : type catch (vide = inconnu ou catch-all avec drapeau)
+  bool exception_catch_all = 12;    // EXCEPTION : garde finale couvrant le reste des exceptions
+}
+
+message SourceOutcomeDef {
+  string id = 1;
+  string label = 2;                 // voir §4.5
+  bool elided = 3;                  // supprimé par l'abaissement (pas d'arête IR)
+  bool activation_mapping_complete = 4; // attestation pour TOUS les cas d’activation
+}
+
+message SourceDecisionDef {
+  string id = 1;
+  string decision_kind = 2;
+  Span span = 3;                    // span de la CONDITION (voir §9.2 par kind)
+  string function_id = 4;           // vide si hors fonction
+  string parent_decision_id = 5;    // pour LOGICAL_OPERAND : l'IF/boucle englobant
+  repeated SourceOutcomeDef outcomes = 6;
+}
+
+message SourceIrLinkDef {
+  string source_outcome_id = 1;
+  string control_edge_id = 2;
+  string mapping_kind = 3;          // DIRECT | SHORT_CIRCUIT | SWITCH_CASE | LOOP_CONDITION | IMPLICIT
+  string quality = 4;               // EXACT | APPROX | HEURISTIC
+  bool inverted = 5;
+}
+
+// Alternative d’activation d’une source outcome : OU entre les cas, ET ordonné entre les arêtes d’un cas.
+// `ordered_control_edge_ids` sont des IDs du MÊME flux/unité.
+message SourceOutcomeActivationCaseDef {
+  string source_outcome_id = 1;
+  uint32 case_ordinal = 2;
+  repeated string ordered_control_edge_ids = 3;
+  string quality = 4;                 // EXACT | APPROX | HEURISTIC
+}
+
+message ImplicitExitSiteDef {
+  string id = 1;
+  string function_id = 2;
+  Span span = 3;
+  string exit_kind = 4;
+  string modeling_status = 5; // MODELED | UNMODELED | UNKNOWN
+}
+
+message CallTargetDef {
+  string call_instruction_id = 1;
+  string target_function_id = 2;    // fonction réelle OU stub externe du même flux
+  string resolution_kind = 3;       // STATIC | CHA | RTA | VTA | MANUAL
+}
+
+message Diagnostic {
+  string severity = 1;              // INFO | WARNING | ERROR
+  string code = 2;                  // voir §5.6
+  string message = 3;
+  Span span = 4;
+  string affected_function_id = 5;
+  string impact = 6;                // INVENTORY | SYMBOLIC | EFFECTS | CALLGRAPH | TYPES | CONCURRENCY | OTHER
+}
+
+message EndUnit {
+  string unit_id = 1;
+  string inventory_status = 2;      // avis de l'adaptateur : COMPLETE | PARTIAL | FAILED (le cœur recalcule)
+  uint64 expected_source_decisions = 3; // compté INDÉPENDAMMENT dans l'AST
+  uint64 emitted_source_decisions = 4;  // nombre de SourceDecisionDef émis
+  uint64 emitted_ir_edges = 5;          // nombre de ControlEdgeDef émis
+}
+
+message Record {
+  oneof content {
+    Header header = 1;
+    TypeDef type_def = 2;
+    SymbolDef symbol_def = 3;
+    ValueDef value_def = 4;
+    FunctionDef function_def = 5;
+    BlockDef block_def = 6;
+    InstructionDef instruction_def = 7;
+    ControlEdgeDef control_edge_def = 8;
+    SourceDecisionDef source_decision_def = 9;
+    SourceIrLinkDef source_ir_link = 10;
+    CallTargetDef call_target_def = 11;
+    Diagnostic diagnostic = 12;
+    EndUnit end_unit = 13;
+    UnitDef unit_def = 14;
+    SourceFileDef source_file_def = 15;
+    SourceOutcomeActivationCaseDef source_outcome_activation_case = 16;
+    ImplicitExitSiteDef implicit_exit_site = 17;
+  }
+}

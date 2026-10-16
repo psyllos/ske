@@ -1,0 +1,1 @@
+SELECT so.id FROM source_outcomes so JOIN source_decisions d ON d.id=so.decision_id JOIN compilation_units u ON u.id=d.unit_id WHERE u.inventory_status='COMPLETE' AND so.elided=0 AND NOT EXISTS (SELECT 1 FROM source_ir_links l WHERE l.source_outcome_id=so.id);

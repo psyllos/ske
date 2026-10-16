@@ -1,0 +1,8 @@
+{
+  "function":"example/partial.Safe$1",
+  "source_decisions":[{"id":"sd0","kind":"IF","cond_text":"r != nil","parent":null,"outcomes":["TRUE","FALSE"]}],
+  "properties":["P-LINK-ALL","P-NO-HEUR"],
+  "diagnostics_required":["RECOVER_UNMODELED"],
+  "diagnostics_forbidden_severity":["ERROR"],
+  "inventory_status":"PARTIAL"
+}

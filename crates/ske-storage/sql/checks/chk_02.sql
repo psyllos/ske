@@ -1,0 +1,1 @@
+SELECT s.id FROM symbols s JOIN cir_types t ON t.id=s.type_id WHERE t.snapshot_id<>s.snapshot_id UNION ALL SELECT v.id FROM values_ir v JOIN cir_types t ON t.id=v.type_id WHERE t.snapshot_id<>v.snapshot_id;

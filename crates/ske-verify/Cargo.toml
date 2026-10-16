@@ -1,0 +1,12 @@
+[package]
+name = "ske-verify"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rusqlite.workspace = true
+
+[dev-dependencies]
+ske-storage = { path = "../ske-storage" }
+ske-ingest = { path = "../ske-ingest" }
+tempfile.workspace = true

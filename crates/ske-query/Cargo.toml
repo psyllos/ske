@@ -1,0 +1,21 @@
+[package]
+name = "ske-query"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+ske-common.workspace = true
+ske-storage.workspace = true
+ske-ingest.workspace = true
+rusqlite.workspace = true
+serde_json.workspace = true
+serde.workspace = true
+toml = "=1.1.8"
+ske-cir.workspace = true
+ske-symbolic = { path = "../ske-symbolic" }
+ske-solver = { path = "../ske-solver" }
+ske-verify = { path = "../ske-verify" }
+prost.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
