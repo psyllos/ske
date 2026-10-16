@@ -418,6 +418,10 @@ puis intégrer le moteur des résumés.
   `ksQQ9uo16AT0RrqL7JdWZgoH9ZLOAAlbXZIBxBDZiRjivQ9OQqTS_tRBC-14`
 - Lot C — chemins statiques + graphe d'appels :
   `ksQQ9uo16AT0RrqL7JdWZgoH9ZLOAAlbZJIBxBDZiRjivQ9OQqTS_tRBC-14`
+- Lot D — moteur des résumés interprocéduraux (T-0.4-02/03/04) :
+  `ksQQ9uo16AT0RrqL7JdWZgoH9ZLOAAsd05IBxBDZiRjivQ9OQqTS_tRBC-14`
+  (`ske-symbolic/src/summary.rs` + extension `analyze_with_summaries` +
+  crate `ske-summary`).
 
 Coordinateur : intégration du moteur des résumés (T-0.4-02/03/04), mode
 intervalles dans le moteur, `ske-summary`, persistance summary_* dans
