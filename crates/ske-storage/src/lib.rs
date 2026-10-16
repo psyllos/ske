@@ -5,6 +5,7 @@ use ske_common::{sha256_hex, Error, Result};
 use std::{path::Path, time::Duration};
 
 pub const INITIAL_MIGRATION: &str = include_str!("../../../migrations/0001_initial.sql");
+pub const CAPABILITIES_MIGRATION: &str = include_str!("../../../migrations/0002_capabilities.sql");
 const CHECKS: [&str; 22] = [
     include_str!("../sql/checks/chk_01.sql"),
     include_str!("../sql/checks/chk_02.sql"),
@@ -184,6 +185,33 @@ fn migrate(conn: &mut Connection) -> Result<()> {
             tx.execute(
                 "INSERT INTO schema_migrations(version,description,checksum) VALUES(1,'initial',?1)",
                 [checksum],
+            ).map_err(map_sql_error)?;
+        }
+    }
+    // v0.5: migration 0002 (capabilities), same immediate transaction, its own checksum record.
+    let capabilities_checksum = sha256_hex(CAPABILITIES_MIGRATION);
+    let applied: Option<String> = tx
+        .query_row(
+            "SELECT checksum FROM schema_migrations WHERE version=2",
+            [],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(map_sql_error)?;
+    match applied {
+        Some(previous) if previous != capabilities_checksum => {
+            return Err(Error::new(
+                "E_MIGRATION_CHECKSUM",
+                "Migration 0002 checksum differs",
+            ));
+        }
+        Some(_) => {}
+        None => {
+            tx.execute_batch(CAPABILITIES_MIGRATION)
+                .map_err(map_sql_error)?;
+            tx.execute(
+                "INSERT INTO schema_migrations(version,description,checksum) VALUES(2,'capabilities',?1)",
+                [capabilities_checksum],
             ).map_err(map_sql_error)?;
         }
     }

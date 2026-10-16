@@ -6,6 +6,45 @@ fn memory() -> Storage {
     Storage::open(":memory:").unwrap()
 }
 
+fn table_names(conn: &Connection) -> BTreeSet<String> {
+    let mut stmt = conn
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
+        .unwrap();
+    stmt.query_map([], |r| r.get::<_, String>(0))
+        .unwrap()
+        .collect::<rusqlite::Result<BTreeSet<_>>>()
+        .unwrap()
+}
+
+fn trigger_names(conn: &Connection) -> BTreeSet<String> {
+    let mut stmt = conn
+        .prepare("SELECT name FROM sqlite_master WHERE type='trigger'")
+        .unwrap();
+    stmt.query_map([], |r| r.get::<_, String>(0))
+        .unwrap()
+        .collect::<rusqlite::Result<BTreeSet<_>>>()
+        .unwrap()
+}
+
+/// Reproduce the pre-v0.5 database state: migrated only to version 1.
+fn v1_only() -> Connection {
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS schema_migrations (
+            version INTEGER PRIMARY KEY, description TEXT NOT NULL,
+            checksum TEXT NOT NULL, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );",
+    )
+    .unwrap();
+    conn.execute_batch(INITIAL_MIGRATION).unwrap();
+    conn.execute(
+        "INSERT INTO schema_migrations(version,description,checksum) VALUES(1,'initial',?1)",
+        [ske_common::sha256_hex(INITIAL_MIGRATION)],
+    )
+    .unwrap();
+    conn
+}
+
 fn seed(db: &Storage) {
     db.conn
         .execute_batch(
@@ -77,7 +116,6 @@ fn rejected(conn: &Connection, sql: &str, code: &str) {
 
 #[test]
 fn schema_tables_match() {
-    let db = memory();
     let spec = include_str!("../../../SKE_Specification_Implementation_v1.4.md");
     let section = spec.split("## 8.2.").nth(1).unwrap();
     let literal = section
@@ -95,40 +133,39 @@ fn schema_tables_match() {
         .split('`')
         .next()
         .unwrap();
-    let mut expected: BTreeSet<String> =
+    let mut expected_v1: BTreeSet<String> =
         table_list.split(',').map(|s| s.trim().to_owned()).collect();
-    expected.extend([
+    expected_v1.extend([
         "repositories".to_owned(),
         "snapshots".to_owned(),
         "schema_migrations".to_owned(),
     ]);
-    let mut stmt = db
-        .conn
-        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
-        .unwrap();
-    let actual = stmt
-        .query_map([], |r| r.get::<_, String>(0))
-        .unwrap()
-        .collect::<rusqlite::Result<BTreeSet<_>>>()
-        .unwrap();
-    assert_eq!(actual.len(), 47);
-    assert_eq!(actual, expected);
+    // Expected table count depends on the migration version: 47 for v1 only,
+    // 50 for v1 + v2.
+    assert_eq!(expected_v1.len(), 47);
+    assert_eq!(table_names(&v1_only()), expected_v1);
+    let expected_v2: BTreeSet<String> = expected_v1
+        .iter()
+        .cloned()
+        .chain([
+            "functional_capabilities".to_owned(),
+            "capability_scenarios".to_owned(),
+            "scenario_links".to_owned(),
+        ])
+        .collect();
+    assert_eq!(expected_v2.len(), 50);
+    let db = memory();
+    let actual = table_names(&db.conn);
+    assert_eq!(actual.len(), 50);
+    assert_eq!(actual, expected_v2);
     let expected_triggers: BTreeSet<_> = literal
         .split("CREATE TRIGGER ")
         .skip(1)
         .map(|s| s.split_whitespace().next().unwrap().to_owned())
         .collect();
-    let mut stmt = db
-        .conn
-        .prepare("SELECT name FROM sqlite_master WHERE type='trigger'")
-        .unwrap();
-    let actual = stmt
-        .query_map([], |r| r.get::<_, String>(0))
-        .unwrap()
-        .collect::<rusqlite::Result<BTreeSet<_>>>()
-        .unwrap();
-    assert_eq!(actual.len(), 21);
-    assert_eq!(actual, expected_triggers);
+    let actual_triggers = trigger_names(&db.conn);
+    assert_eq!(actual_triggers.len(), 21);
+    assert_eq!(actual_triggers, expected_triggers);
     assert_eq!(
         db.db_check().unwrap()["checks"].as_array().unwrap().len(),
         22
@@ -150,7 +187,7 @@ fn migrations_idempotent_wal_and_checksum() {
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .unwrap();
-        assert_eq!((count, version), (1, 1));
+        assert_eq!((count, version), (2, 2));
         assert_eq!(
             db.conn
                 .query_row("PRAGMA journal_mode", [], |r| r.get::<_, String>(0))
@@ -164,14 +201,165 @@ fn migrations_idempotent_wal_and_checksum() {
             5000
         );
     }
-    let db = Storage::open(&path).unwrap();
+    // Tampering the version-1 row's checksum is detected on reopen.
+    let v1_tampered = dir.path().join("ske-v1-tampered.db");
+    let db = Storage::open(&v1_tampered).unwrap();
     db.conn
-        .execute("UPDATE schema_migrations SET checksum='tampered'", [])
+        .execute(
+            "UPDATE schema_migrations SET checksum='tampered' WHERE version=1",
+            [],
+        )
         .unwrap();
     drop(db);
-    let err = Storage::open(path).err().unwrap();
+    let err = Storage::open(&v1_tampered).err().unwrap();
     assert_eq!(err.code, "E_MIGRATION_CHECKSUM");
     assert_eq!(err.exit_code(), 6);
+    // Tampering the version-2 row's checksum is detected on reopen too.
+    let v2_tampered = dir.path().join("ske-v2-tampered.db");
+    let db = Storage::open(&v2_tampered).unwrap();
+    db.conn
+        .execute(
+            "UPDATE schema_migrations SET checksum='tampered' WHERE version=2",
+            [],
+        )
+        .unwrap();
+    drop(db);
+    let err = Storage::open(&v2_tampered).err().unwrap();
+    assert_eq!(err.code, "E_MIGRATION_CHECKSUM");
+    assert_eq!(err.exit_code(), 6);
+}
+
+#[test]
+fn migration_0002_capabilities() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("ske.db");
+    let db = Storage::open(&path).unwrap();
+    // Migration 2 applied exactly once: two rows, latest is version 2.
+    let (count, version): (i64, i64) = db
+        .conn
+        .query_row(
+            "SELECT COUNT(*),MAX(version) FROM schema_migrations",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((count, version), (2, 2));
+    // The three capability tables and their two indexes exist.
+    let tables = table_names(&db.conn);
+    for name in [
+        "functional_capabilities",
+        "capability_scenarios",
+        "scenario_links",
+    ] {
+        assert!(tables.contains(name), "missing table {name}");
+    }
+    for index in [
+        "idx_capability_scenarios_scenario",
+        "idx_scenario_links_from",
+    ] {
+        let present: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name=?1",
+                [index],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(present, 1, "missing index {index}");
+    }
+    // 50 non-sqlite tables total, 21 triggers.
+    assert_eq!(tables.len(), 50);
+    assert_eq!(trigger_names(&db.conn).len(), 21);
+    // db check is unchanged: 22 checks, no violations.
+    let report = db.db_check().unwrap();
+    assert_eq!(report["ok"], true);
+    assert_eq!(report["checks"].as_array().unwrap().len(), 22);
+    // Reopening does not re-apply migration 2 (still exactly two rows).
+    drop(db);
+    let db = Storage::open(&path).unwrap();
+    let (count, version): (i64, i64) = db
+        .conn
+        .query_row(
+            "SELECT COUNT(*),MAX(version) FROM schema_migrations",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((count, version), (2, 2));
+    // The new tables' only external (pre-existing) dependencies are
+    // snapshots(id) and behavior_scenarios(id); the remaining reference is
+    // internal (capability_scenarios -> functional_capabilities). The
+    // symbolic-expressions dependencies therefore stay untouched and db check
+    // stays green on the reopened handle.
+    let mut referenced: BTreeSet<String> = BTreeSet::new();
+    for name in [
+        "functional_capabilities",
+        "capability_scenarios",
+        "scenario_links",
+    ] {
+        let mut stmt = db
+            .conn
+            .prepare(&format!("PRAGMA foreign_key_list({name})"))
+            .unwrap();
+        let rows = stmt
+            .query_map([], |r| r.get::<_, String>("table"))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        referenced.extend(rows);
+    }
+    let new_tables: BTreeSet<String> = [
+        "functional_capabilities".to_owned(),
+        "capability_scenarios".to_owned(),
+        "scenario_links".to_owned(),
+    ]
+    .into_iter()
+    .collect();
+    let external = referenced
+        .difference(&new_tables)
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        external,
+        BTreeSet::from(["snapshots".to_owned(), "behavior_scenarios".to_owned()])
+    );
+    assert_eq!(db.db_check().unwrap()["ok"], true);
+    // An OLD database migrated only to version 1 upgrades cleanly: the 47
+    // existing tables stay untouched and only the three new ones are added.
+    let old = dir.path().join("old.db");
+    {
+        let conn = Connection::open(&old).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY, description TEXT NOT NULL,
+                checksum TEXT NOT NULL, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );",
+        )
+        .unwrap();
+        conn.execute_batch(INITIAL_MIGRATION).unwrap();
+        conn.execute(
+            "INSERT INTO schema_migrations(version,description,checksum) VALUES(1,'initial',?1)",
+            [ske_common::sha256_hex(INITIAL_MIGRATION)],
+        )
+        .unwrap();
+    }
+    let before = table_names(&Connection::open(&old).unwrap());
+    assert_eq!(before.len(), 47);
+    let upgraded = Storage::open(&old).unwrap();
+    let after = table_names(&upgraded.conn);
+    assert_eq!(after.len(), 50);
+    for name in &before {
+        assert!(after.contains(name), "v1 table {name} lost during upgrade");
+    }
+    let (count, version): (i64, i64) = upgraded
+        .conn
+        .query_row(
+            "SELECT COUNT(*),MAX(version) FROM schema_migrations",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((count, version), (2, 2));
 }
 
 #[test]
