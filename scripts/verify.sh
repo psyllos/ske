@@ -66,4 +66,4 @@ db = sqlite3.connect(sys.argv[1])
 rows = db.execute("SELECT id, source_fingerprint, config_fingerprint FROM snapshots ORDER BY id").fetchall()
 assert len(rows) == 2 and rows[0][0] != rows[1][0] and rows[0][1:] == rows[1][1:], rows
 PY
-printf 'VERIFY OK v0.3\n'
+printf 'VERIFY OK v0.4\n'

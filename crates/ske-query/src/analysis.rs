@@ -492,7 +492,7 @@ fn run_with_solver(
     super::analysis_read::summary(db, run)
 }
 
-fn persist_expr(
+pub(crate) fn persist_expr(
     db: &Connection,
     snapshot: i64,
     function: i64,

@@ -28,6 +28,14 @@ fn specified_diagnostics_and_inventory_propagation() {
         0
     );
     for (name, code, severity, impact) in [
+        // §19 v0.4 adds Doer without any implementation. This diagnostic is
+        // required for that fixture, not a relaxation of the v0.2 allowlist.
+        (
+            "example.CallDoer",
+            "CALL_TARGET_UNRESOLVED",
+            "INFO",
+            "CALLGRAPH",
+        ),
         (
             "example.Pipe",
             "CONCURRENCY_PARTIAL",
@@ -83,6 +91,10 @@ fn specified_diagnostics_and_inventory_propagation() {
     let diagnostics = rows(&c, "SELECT COALESCE(s.qualified_name,''),d.code,d.severity FROM diagnostics d JOIN compilation_units u ON u.id=d.unit_id LEFT JOIN functions f ON f.id=d.function_id LEFT JOIN symbols s ON s.id=f.symbol_id WHERE u.unit_key='go:example@linux/amd64'");
     assert!(!diagnostics.is_empty());
     for d in diagnostics {
+        if d[0] == "example.CallDoer" && d[1] == "CALL_TARGET_UNRESOLVED" {
+            assert_eq!(d[2], "INFO");
+            continue;
+        }
         if (d[0] == "example.Pipe" || d[0] == "example.Pipe$1") && d[1] == "CONCURRENCY_PARTIAL" {
             continue;
         }

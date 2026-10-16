@@ -245,3 +245,47 @@ fn paths_explore_static_reachability() {
     ]);
     assert_eq!(calldoer["incomplete"], true);
 }
+
+#[test]
+fn paths_limits_and_pagination_are_distinct() {
+    let lab = Lab::new();
+    let base = [
+        "paths",
+        "explore",
+        "--source",
+        "example.Entry",
+        "--target",
+        "example.helper",
+    ];
+    for option in ["--max-nodes", "--max-depth", "--max-paths"] {
+        let mut args = base.to_vec();
+        args.extend([option, "0"]);
+        let result = lab.ok(&args);
+        assert_eq!(result["truncated"], true, "{option}");
+        assert!(result["frontier_count"].as_u64().unwrap() > 0, "{option}");
+        assert_eq!(result["page"]["truncated"], false);
+    }
+    let mut args = base.to_vec();
+    args.extend(["--limit", "0"]);
+    let result = lab.ok(&args);
+    assert_eq!(result["page"]["total"], 1);
+    assert_eq!(result["page"]["truncated"], true);
+    assert_eq!(result["truncated"], false);
+    let mut args = base.to_vec();
+    args.extend(["--max-paths", "1"]);
+    assert_eq!(
+        lab.ok(&args)["truncated"],
+        false,
+        "one exhaustive path must not be marked truncated"
+    );
+    let identity = lab.ok(&[
+        "paths",
+        "explore",
+        "--source",
+        "example.helper",
+        "--target",
+        "example.helper",
+    ]);
+    assert_eq!(identity["paths"][0]["calls"].as_array().unwrap().len(), 0);
+    assert_eq!(identity["page"]["truncated"], false);
+}

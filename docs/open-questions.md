@@ -1,5 +1,22 @@
 # Questions et choix conservateurs
 
+## Reprise v0.4 — frontières explicites, sans dérogation d'AC
+
+Les 14 AC v0.4 sont exécutés et PASS, avec les 96 AC précédents rejoués.
+Les effets non composables conservent havoc/OPAQUE et `UNKNOWN_EFFECT` ;
+les activations récursives résiduelles restent PARTIAL. Les boucles avec
+allocations/adresses dynamiques ne sont pas fermées par une abstraction de
+heap non implémentée. Les futurs domaines mémoire plus précis et la
+réutilisation entre snapshots restent des extensions, pas des garanties
+attribuées au jalon actuel. Voir `soundness-and-limits.md`.
+
+L'ajout normatif `interproc.go` a révélé deux tests v0.2 qui n'étaient pas
+entièrement « par fonction » : le compteur global 52 et l'allowlist des
+diagnostics. Le compteur historique 52 reste vérifié séparément des quatre
+IF v0.4 ; `CallDoer/CALL_TARGET_UNRESOLVED/INFO/CALLGRAPH` est désormais
+vérifié explicitement. Aucun golden ni résultat d'extracteur n'a été
+modifié pour masquer un échec.
+
 ## 2026-10-15 — §24 et progression des jalons
 
 La demande vise une implémentation complète. §24 prescrit v0.1, puis v0.2,

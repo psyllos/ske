@@ -502,3 +502,135 @@ Le moteur v0.3 havogue tout `CALL`. Pour v0.4 il faut (contrats relus) :
   (avec interpréteur concret lot B), summary_deterministic ;
   analyse_sum_intervals (avec ske-abstract lot A).
 
+## Reprise effective — interpréteur concret écrit et testé
+
+La reprise ne dépend d'aucun agent restant en arrière-plan. Les messages
+précédents annonçant à répétition une écriture de `concrete.rs` ne
+correspondaient pas à du code livré ; cette section décrit l'état réel.
+
+- Ajout de `crates/ske-symbolic/src/concrete.rs` et export public du module.
+- API : `run(entry, functions, parameters, globals, limits)` retourne les
+  valeurs de retour et une trace (instructions et valeurs SSA observées).
+- Arithmétique réutilisée depuis `ske-cir::bitvec::BitVec`, sans réimplémenter
+  les règles de débordement, division signée ou décalage.
+- Appels statiques et récursion bornés ; paramètres positionnels ; retours
+  multiples et EXTRACT_FIELD ; globales injectées sans exécuter de stub hôte.
+- Mémoire non globale et opcodes inconnus : erreur explicite.
+- Sept tests concrets exécutés : débordement/déterminisme, limites
+  d'instructions/récursion, rejet opaque, factorielle 0..6, 200 entrées
+  déterministes [-10,20] contre référence Rust, globales/retours multiples.
+- `cargo test -p ske-symbolic` : exit 0, 41 tests, aucun ignoré.
+- `cargo clippy -p ske-symbolic --all-targets -- -D warnings`,
+  `cargo fmt --all -- --check`, `./scripts/check-deps.sh` : exit 0.
+
+Limites : pas de résumés ni de `summary_matches_concrete` ; AC-0.4-08 reste
+NOT_RUN. Les tests sur de vrais corps importés, PHI/SWITCH et casts/INVOKE
+doivent être complétés avant certification.
+
+Points de revue identifiés dans les travaux précédents (non certifiés par
+les tests actuels) :
+
+- `ske-abstract` : revoir les bornes int128/uint128, le calcul MUL lorsqu'un
+  seul produit d'extrémités déborde, et le rétrécissement selon les bornes du
+  type. Le test Sum actuel calcule une formule fermée, pas l'invariant issu
+  de Kleene : ne pas le présenter comme validation du mode intervalles.
+- `paths explore` : renforcer les tests des limites/pagination/frontière,
+  l'identité des fonctions entre unités et les préfixes contenant `|`.
+- Les explications historiques attribuant les livraisons vides à un
+  épuisement de contexte étaient des hypothèses, pas un diagnostic démontré.
+  Seule l'interruption de connexion du lot A est explicitement rapportée.
+
+Prochaine étape : T-0.4-02/03/04, DTO et substitution DAG des résumés,
+composition aux appels et récursion ; puis persistance, intervalles,
+comparaison résumé/concret et validation complète. Aucun push ni merge partagé.
+
+## v0.4 validée — reprise à conserver
+
+Implémentation directe achevée après les livraisons vides des sous-agents.
+Le précédent checkpoint « interpréteur concret seulement » est historique.
+v0.1, v0.2 et v0.3 n'ont pas été réimplémentées.
+
+### Livré
+
+- Graphe d'appels persistant et SCC Tarjan itératif ; `ske paths explore`
+  avec identités distinctes entre unités, chemins simples, limites,
+  pagination, vraie frontière résiduelle et indicateur d'incomplétude.
+- `ske-symbolic::summary` : DTO, substitution mémoïsée entre arènes,
+  filtrage SAT des cas, conservation UNKNOWN sans fausse fermeture,
+  retours multiples/EXTRACT_FIELD, provenance des issues empruntées.
+- `ske-summary` : calcul pur, composition bornée et clé de cache canonique.
+  Deux dépliages récursifs ; `Fact` produit 4 cas, dont exactement 1 PARTIAL
+  avec `RECURSION_BOUND`. Aucun résidu transformé en résultat exact.
+- Globales initiales libres, lectures/écritures connues et deltas propagés.
+  Régression `ReadChangingGlobal` : deux appels encadrant une écriture ne
+  partagent pas indûment la même valeur initiale. Deltas mémoire et effets
+  inconnus persistés, pas supprimés silencieusement.
+- API `Query::summarize_scalar` : résolution depuis call_targets,
+  transaction de calcul/persistance dans les tables normatives existantes,
+  garde/retours/provenance/spans, empreintes déterministes et déduplication.
+  Un calcul coupé ne laisse aucune ligne partielle présentée comme complète.
+- `ske-abstract::cir` : équations d'intervalles sur SSA, élargissement puis
+  un rétrécissement. Corrections des bornes int128/uint128, du MUL où un
+  seul produit déborde, du wrapping sans modulo nul et du narrowing par type.
+- `loop_mode="intervals"` : PHI génériques, mémoire havockée,
+  OVERAPPROX, `LOOP_INTERVAL_ABSTRACTION`, `LOOP_ABSTRACTED`, subsumption
+  sans coupe ; `Sum` est COMPLETED/closed avec ses deux issues POSSIBLE.
+  Défaut `unroll` et tests v0.3 inchangés.
+- Interpréteur concret CIR avec bornes d'étapes/récursion. Comparaison
+  résumé/concret pour helper, DivMod et Fact sur 200 entrées déterministes
+  par fonction, plus n=0..6 ; exactement un cas applicable par entrée.
+  200 exécutions CIR concrètes de Sum vérifient les invariants de i et s
+  (plus seulement une formule fermée indépendante de l'analyse).
+
+### Validation finale exécutée
+
+`python3 scripts/validate-v04.py` : exit 0, **14/14 AC PASS**.
+AC-0.4-14 exécute réellement :
+
+```sh
+./scripts/verify.sh
+SKE_EXPECT_VERIFY_VERSION=v0.4 python3 scripts/validate-v03.py
+```
+
+Résultats : `VERIFY OK v0.4`, **29/29 AC v0.3 PASS**, **25/25 AC v0.2 PASS**
+et **42/42 AC v0.1 PASS**. `cargo test --workspace` a également été exécuté
+directement avec exit 0. Aucun test ignoré. Fmt, Clippy workspace strict,
+check-deps (dont selftest), régénération protobuf et builds avec warnings
+interdits sont inclus dans verify. Aucun schéma, migration ni golden changé.
+
+Rapports durables : `docs/validation/v0.4.md`, `docs/validation/v0.3.md`.
+Logs locaux : `target/validation-v04/{results.json,AC-0.4-*.log,paths-cli.log}`,
+`target/validation-v03/`, `validation-v02/`, `validation-v01/`.
+Ces artefacts sous target ne sont pas versionnés ; les rapports Markdown
+et ce journal permettent la reprise sur une autre machine.
+
+### Échecs constatés puis corrigés
+
+1. Premier verify : compteur global v0.2 attendu 52, obtenu 56 après ajout
+   des quatre IF normatifs de `interproc.go`. Le test préserve maintenant
+   séparément l'inventaire historique 52 et exige les quatre nouveaux IF ;
+   les trois compteurs adaptateur/import/SQL restent comparés.
+2. Verify suivant : allowlist v0.2 refusant le diagnostic normatif nouveau
+   `example.CallDoer/CALL_TARGET_UNRESOLVED/INFO/CALLGRAPH`.
+   Ajout d'une assertion explicite pour ce seul couple fonction/diagnostic,
+   sans élargir silencieusement l'allowlist des anciennes fonctions.
+3. Relance intégrale : 14/14 PASS, régression complète verte.
+
+Les harness v0.1/v0.2 acceptaient déjà `SKE_EXPECT_VERIFY_VERSION`.
+v0.3 respecte désormais cette même variable pour vérifier v0.4 et la
+transmettre à la régression v0.2 ; sans variable, son défaut reste v0.3.
+
+### Limites et prochaines étapes
+
+Les effets non composables, sorties exceptionnelles non substituées et heap
+restent des approximations explicites, jamais EXACT par omission. Les boucles
+avec allocations/adresses dynamiques gardent une coupe, et les grands uint128
+peuvent être arrondis à top. Le contexte de l'API de résumé est le contexte
+par défaut ; aucune réutilisation incrémentale inter-snapshots ni couche
+comportements/règles métier v0.5 n'est annoncée. Voir
+`docs/soundness-and-limits.md`.
+
+Branche locale `ske/implementation` ; aucun push ni merge partagé,
+aucun tag modifié. CI distante non exécutée. v0.5 non commencée :
+ne pas la démarrer sans nouvelle demande.
+

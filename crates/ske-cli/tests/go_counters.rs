@@ -14,8 +14,33 @@ fn independent_ast_counters_match_persisted_inventory() {
         ("go:example@linux/amd64", 52),
     ]) {
         assert_eq!(unit[0], suffix);
+        // §19 v0.4 adds exactly four IF decisions in interproc.go. Preserve
+        // the original v0.2 count independently instead of replacing 52 by
+        // whatever total the extractor happened to emit.
+        let extension = if suffix == "go:example@linux/amd64" {
+            4
+        } else {
+            0
+        };
+        let added: i64 = c
+            .query_row(
+                "SELECT COUNT(*) FROM source_decisions d
+             JOIN compilation_units u ON u.id=d.unit_id
+             JOIN source_spans span ON span.id=d.source_span_id
+             JOIN source_files file ON file.id=span.source_file_id
+             WHERE u.unit_key=?1 AND file.path='interproc.go'",
+                [suffix],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(added, extension, "normative v0.4 fixture decisions");
+        assert_eq!(
+            unit[3].parse::<i64>().unwrap() - added,
+            expected,
+            "original v0.2 inventory"
+        );
         for value in &unit[1..] {
-            assert_eq!(value, &expected.to_string(), "{}", unit[0]);
+            assert_eq!(value, &(expected + extension).to_string(), "{}", unit[0]);
         }
     }
 }

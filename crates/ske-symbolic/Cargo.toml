@@ -7,3 +7,7 @@ edition.workspace = true
 ske-cir.workspace = true
 ske-common.workspace = true
 ske-solver = { path = "../ske-solver" }
+ske-abstract.workspace = true
+
+[dev-dependencies]
+ske-summary = { path = "../ske-summary" }

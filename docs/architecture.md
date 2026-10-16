@@ -10,8 +10,8 @@ adaptateur indépendant, pas nécessaire à l'import de fixtures.
 
 **État : v0.1 validée, 42 AC PASS** (`validation/v0.1.md`). CIR/prost,
 stockage, import, query, CLI et graphes (dominance CHK, DFS, SCC) sont intégrés.
-v0.2 Go est validée (25 AC, régression v0.1 incluse) ; v0.3 non commencée.
-Le journal et `validation/v0.2.md` détaillent le checkpoint courant.
+v0.2 Go est validée (25 AC), v0.3 (29 AC) et v0.4 (14 AC) également.
+Le journal et `validation/v0.4.md` détaillent le checkpoint courant.
 
 ## Flux v0.1
 
@@ -34,9 +34,12 @@ common, sans accès direct à rusqlite. Le contrôle normatif est
 `scripts/check-deps.sh` via `cargo metadata` (§2.2), dépendances normales
 uniquement. Les adaptateurs ne connaissent que les schémas publics.
 
-À terme, solver restera séparé du stockage ; symbolic ne dépendra ni du
-stockage ni des adaptateurs ; verify restera indépendant de symbolic et de
-sa classification. Ces composants sont **prévus, non implémentés dans ce lot**.
+Solver est séparé du stockage ; symbolic ne dépend ni du stockage ni des
+adaptateurs ; verify reste indépendant de symbolic et de sa classification.
+En v0.4, `ske-abstract` porte les équations d'intervalles sur la CIR ;
+`ske-symbolic` porte les états, l'application des résumés et le concret ;
+`ske-summary` porte calcul pur et identité de cache. `ske-query` résout les
+cibles persistées et possède les transactions et DTO applicatifs.
 
 ## Reproductibilité et sécurité
 

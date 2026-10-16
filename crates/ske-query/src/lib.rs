@@ -11,6 +11,9 @@ pub mod analysis_config;
 mod analysis_load;
 mod analysis_read;
 mod callgraph;
+mod summaries;
+#[cfg(test)]
+mod summary_tests;
 
 pub struct Query {
     storage: Storage,
@@ -81,6 +84,20 @@ impl Query {
     }
     pub fn db_check(&self) -> Result<Value> {
         self.storage.db_check()
+    }
+    /// Compute and persist scalar/global summaries in the default context.
+    /// Residual recursion is PARTIAL; unknown effects remain explicit. A
+    /// worklist cut fails rather than persisting incomplete coverage as exact.
+    pub fn summarize_scalar(
+        &self,
+        snapshot: &str,
+        repository: Option<&str>,
+        entry: &str,
+        budget: &ske_symbolic::engine::Budget,
+    ) -> Result<Value> {
+        let sid = self.snapshot(snapshot, repository)?;
+        let (function, _) = self.function(snapshot, repository, entry)?;
+        summaries::run(self.db(), sid, function, budget)
     }
     pub fn ingest_go(&self, options: &ske_ingest::GoOptions<'_>) -> Result<Value> {
         ske_ingest::ingest_go(&self.storage, options)
@@ -177,10 +194,12 @@ impl Query {
         offset: usize,
     ) -> Result<Value> {
         let sid = self.snapshot(snapshot, repository)?;
+        let (source_id, _) = self.function(snapshot, repository, source)?;
         callgraph::paths_explore(
             self.db(),
             sid,
             source,
+            source_id,
             target,
             max_depth,
             max_paths,

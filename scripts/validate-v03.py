@@ -190,7 +190,7 @@ def main():
             require((ROOT / "docs/validation/v0.3.md").is_file(), "missing report")
         run(23, "test -f docs/soundness-and-limits.md && test -f docs/validation/v0.3.md", docs)
         def verify(text):
-            require(text.rstrip().endswith("VERIFY OK v0.3"), "final verify line")
+            require(text.rstrip().endswith("VERIFY OK " + os.environ.get("SKE_EXPECT_VERIFY_VERSION", "v0.3")), "final verify line")
             for message in ["SAT case ok", "UNSAT case ok", "UNKNOWN case ok",
                             "TIMEOUT case ok", "PARTIAL never COMPLETE ok"]:
                 require(message in text, f"missing {message}")
@@ -200,7 +200,8 @@ def main():
                 rows = json.loads((ROOT / f"target/validation-{version}/results.json").read_text())
                 require(len(rows) == count and all(r["status"] == "PASS" for r in rows),
                         f"{version} regression")
-        run(25, "SKE_EXPECT_VERIFY_VERSION=v0.3 python3 scripts/validate-v02.py", regression)
+        run(25, "SKE_EXPECT_VERIFY_VERSION=" + shlex.quote(
+            os.environ.get("SKE_EXPECT_VERIFY_VERSION", "v0.3")) + " python3 scripts/validate-v02.py", regression)
         test(26, "cargo test -p ske-symbolic memory_ -- --list && cargo test -p ske-symbolic memory_", memory)
         test(27, "cargo test -p ske-cli --test source_activation_regression")
         test(28, "cargo test -p ske-symbolic call_not_referentially_transparent")

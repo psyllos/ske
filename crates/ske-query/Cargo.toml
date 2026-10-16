@@ -13,6 +13,7 @@ serde.workspace = true
 toml = "=1.1.8"
 ske-cir.workspace = true
 ske-symbolic = { path = "../ske-symbolic" }
+ske-summary = { path = "../ske-summary" }
 ske-solver = { path = "../ske-solver" }
 ske-verify = { path = "../ske-verify" }
 prost.workspace = true

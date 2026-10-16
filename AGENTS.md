@@ -1,8 +1,8 @@
 # SKE — reprise et règles du dépôt
 
 La source normative est `SKE_Specification_Implementation_v1.4.md`.
-La demande en cours est l'exécution de sa section 24, dans l'ordre
-v0.1 → v0.2 → v0.3, avec délégation et état durable.
+La demande porte sur sa section 24 et le jalon v0.4 explicitement demandé,
+après v0.1 → v0.2 → v0.3, avec délégation et état durable.
 
 ## Avant de continuer
 
@@ -21,17 +21,16 @@ v0.1 → v0.2 → v0.3, avec délégation et état durable.
   régression v0.1 : 42 AC PASS. Voir la validation finale et le dernier journal.
 - v0.3 : validée, 29 AC PASS ; non-régression 42 AC v0.1 + 25 AC v0.2.
   Voir `docs/validation/v0.3.md` et le dernier journal.
-- v0.4 : en cours sur la branche locale `ske/implementation` à partir du
-  checkpoint `8004d2f`. Ne pas présenter v0.4 comme livrée avant ses AC.
+- v0.4 : validée, 14 AC PASS ; non-régression 42 AC v0.1 + 25 AC v0.2 +
+  29 AC v0.3. Voir `docs/validation/v0.4.md` et la dernière section du journal.
 
-Prochaines étapes v0.4 (ordre §19, jalon unique) :
+Reprise après v0.4 :
 
-1. Lire `docs/work-log.md` (dernière section) et `docs/validation/v0.3.md`.
-2. Graphe d'appels + `ske paths explore` (T-0.4-01/07).
-3. Résumés de fonctions §7.1 (T-0.4-02/03/04).
-4. Domaines d'intervalles `ske-abstract` + `loop_mode=intervals` (T-0.4-05).
-5. Interpréteur concret `ske-symbolic::concrete` (T-0.4-06).
-6. Non-régression complète et `verify.sh` → `VERIFY OK v0.4`.
+1. Lire `docs/work-log.md` (dernière section), `docs/validation/v0.4.md`
+   et `docs/soundness-and-limits.md`.
+2. Ne pas réimplémenter les jalons v0.1 à v0.4.
+3. `python3 scripts/validate-v04.py` rejoue les 14 AC et les 96 AC précédents.
+4. v0.5 n'est pas commencée ; ne l'engager que sur demande.
 
 ## Discipline
 

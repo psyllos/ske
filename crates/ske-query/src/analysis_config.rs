@@ -82,10 +82,10 @@ impl Budget {
             .transpose()?
             .unwrap_or_default()
             .budget;
-        if value.loop_mode != "unroll" {
+        if !matches!(value.loop_mode.as_str(), "unroll" | "intervals") {
             return Err(Error::new(
                 "E_USAGE",
-                "v0.3 only supports loop_mode = unroll",
+                "loop_mode must be unroll or intervals",
             ));
         }
         // Zero exploration budgets are meaningful and intentionally accepted.

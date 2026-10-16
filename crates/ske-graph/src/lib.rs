@@ -164,27 +164,60 @@ impl Graph {
 
     /// Kosaraju SCC, both passes iterative. Components and members are sorted.
     pub fn strongly_connected_components(&self) -> Vec<Vec<usize>> {
-        let order = self.postorder(0..self.node_count());
-        let mut seen = vec![false; self.node_count()];
+        // Iterative Tarjan: explicit DFS frames avoid consuming the host stack
+        // on large call graphs. Output order remains canonical.
+        let mut indices = vec![None; self.node_count()];
+        let mut low = vec![0; self.node_count()];
+        let mut on_stack = vec![false; self.node_count()];
+        let mut active = Vec::new();
+        let mut counter = 0;
         let mut components = Vec::new();
-        for &root in order.iter().rev() {
-            if seen[root] {
+        for root in 0..self.node_count() {
+            if indices[root].is_some() {
                 continue;
             }
-            let mut stack = vec![root];
-            let mut component = Vec::new();
-            seen[root] = true;
-            while let Some(node) = stack.pop() {
-                component.push(node);
-                for &pred in self.predecessors[node].iter().rev() {
-                    if !seen[pred] {
-                        seen[pred] = true;
-                        stack.push(pred);
+            indices[root] = Some(counter);
+            low[root] = counter;
+            counter += 1;
+            active.push(root);
+            on_stack[root] = true;
+            let mut frames = vec![(root, 0)];
+            while let Some(&(node, next)) = frames.last() {
+                if next < self.successors[node].len() {
+                    let successor = self.successors[node][next];
+                    frames.last_mut().unwrap().1 += 1;
+                    if let Some(index) = indices[successor] {
+                        if on_stack[successor] {
+                            low[node] = low[node].min(index);
+                        }
+                    } else {
+                        indices[successor] = Some(counter);
+                        low[successor] = counter;
+                        counter += 1;
+                        active.push(successor);
+                        on_stack[successor] = true;
+                        frames.push((successor, 0));
+                    }
+                } else {
+                    frames.pop();
+                    if low[node] == indices[node].unwrap() {
+                        let mut component = Vec::new();
+                        loop {
+                            let member = active.pop().unwrap();
+                            on_stack[member] = false;
+                            component.push(member);
+                            if member == node {
+                                break;
+                            }
+                        }
+                        component.sort_unstable();
+                        components.push(component);
+                    }
+                    if let Some(&(parent, _)) = frames.last() {
+                        low[parent] = low[parent].min(low[node]);
                     }
                 }
             }
-            component.sort_unstable();
-            components.push(component);
         }
         components.sort();
         components

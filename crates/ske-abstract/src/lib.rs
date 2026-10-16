@@ -6,6 +6,7 @@
 //! step, and transfer functions for `ADD`/`SUB`/`MUL` where any operation
 //! that can overflow yields the full range of the type.
 use std::fmt;
+pub mod cir;
 
 /// A machine integer sort: bit width and signedness.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -24,7 +25,9 @@ impl IntType {
 
     /// Minimum value of the sort as a 128-bit two's-complement value.
     pub fn min_value(&self) -> i128 {
-        if self.signed {
+        if self.signed && self.width == 128 {
+            i128::MIN
+        } else if self.signed {
             -(1i128 << (self.width - 1))
         } else {
             0
@@ -33,7 +36,9 @@ impl IntType {
 
     /// Maximum value of the sort as a 128-bit two's-complement value.
     pub fn max_value(&self) -> i128 {
-        if self.signed {
+        if self.signed && self.width == 128 {
+            i128::MAX
+        } else if self.signed {
             (1i128 << (self.width - 1)) - 1
         } else if self.width == 128 {
             i128::MAX
@@ -44,27 +49,39 @@ impl IntType {
 
     /// Wrap a 128-bit signed value into the sort's representation.
     pub fn wrap(&self, value: i128) -> i128 {
-        let min = self.min_value();
-        let max = self.max_value();
-        let range = max.wrapping_sub(min).wrapping_add(1);
-        let mut v = value.wrapping_sub(min) % range;
-        if v < 0 {
-            v += range;
+        let mask = u128::MAX >> (128 - self.width);
+        let bits = value as u128 & mask;
+        if self.signed {
+            ((bits << (128 - self.width)) as i128) >> (128 - self.width)
+        } else {
+            bits as i128
         }
-        v.wrapping_add(min)
     }
 }
 
 /// The full range of a sort (top).
 pub fn full_range(ty: IntType) -> Interval {
-    Interval::range(ty, ty.min_value(), ty.max_value())
+    if !ty.signed && ty.width == 128 {
+        Interval::Unsigned128Top
+    } else {
+        Interval::Range {
+            lo: ty.min_value(),
+            hi: ty.max_value(),
+        }
+    }
 }
 
 /// A closed interval or bottom (empty).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Interval {
     Bottom,
-    Range { lo: i128, hi: i128 },
+    Range {
+        lo: i128,
+        hi: i128,
+    },
+    /// Full uint128 range. Upper-half uint128 constants are conservatively
+    /// rounded to this top, never clamped to i128::MAX.
+    Unsigned128Top,
 }
 
 impl Interval {
@@ -73,24 +90,24 @@ impl Interval {
     }
 
     pub fn constant(ty: IntType, value: i128) -> Self {
-        Interval::range(ty, value, value)
+        if !ty.signed && ty.width == 128 && value < 0 {
+            return Self::Unsigned128Top;
+        }
+        let value = ty.wrap(value);
+        Interval::Range {
+            lo: value,
+            hi: value,
+        }
     }
 
     pub fn range(ty: IntType, lo: i128, hi: i128) -> Self {
-        let lo = ty.wrap(lo);
-        let hi = ty.wrap(hi);
-        if ty.signed {
-            // Signed: wrap to signed form, then compare naturally.
-            if lo <= hi {
-                Interval::Range { lo, hi }
-            } else {
-                Interval::Bottom
-            }
-        } else if lo <= hi && lo >= 0 && hi <= ty.max_value() {
-            Interval::Range { lo, hi }
-        } else {
-            Interval::Bottom
+        if lo > hi {
+            return Self::Bottom;
         }
+        if lo < ty.min_value() || hi > ty.max_value() {
+            return full_range(ty);
+        }
+        Interval::Range { lo, hi }
     }
 
     pub fn is_bottom(&self) -> bool {
@@ -100,6 +117,7 @@ impl Interval {
     pub fn contains(&self, value: i128) -> bool {
         match self {
             Interval::Bottom => false,
+            Interval::Unsigned128Top => value >= 0,
             Interval::Range { lo, hi } => *lo <= value && value <= *hi,
         }
     }
@@ -108,6 +126,7 @@ impl Interval {
     pub fn meet(&self, other: &Self) -> Self {
         match (self, other) {
             (Interval::Bottom, _) | (_, Interval::Bottom) => Interval::Bottom,
+            (Interval::Unsigned128Top, b) | (b, Interval::Unsigned128Top) => *b,
             (Interval::Range { lo: l1, hi: h1 }, Interval::Range { lo: l2, hi: h2 }) => {
                 let lo = *l1.max(l2);
                 let hi = *h1.min(h2);
@@ -125,6 +144,9 @@ impl Interval {
         match (self, other) {
             (Interval::Bottom, b) => *b,
             (a, Interval::Bottom) => *a,
+            (Interval::Unsigned128Top, _) | (_, Interval::Unsigned128Top) => {
+                Interval::Unsigned128Top
+            }
             (Interval::Range { lo: l1, hi: h1 }, Interval::Range { lo: l2, hi: h2 }) => {
                 Interval::Range {
                     lo: *l1.min(l2),
@@ -140,6 +162,9 @@ impl Interval {
         match (self, next) {
             (Interval::Bottom, b) => *b,
             (a, Interval::Bottom) => *a,
+            (Interval::Unsigned128Top, _) | (_, Interval::Unsigned128Top) => {
+                Interval::Unsigned128Top
+            }
             (Interval::Range { lo: l1, hi: h1 }, Interval::Range { lo: l2, hi: h2 }) => {
                 let lo = if *l2 < *l1 { ty.min_value() } else { *l1 };
                 let hi = if *h2 > *h1 { ty.max_value() } else { *h1 };
@@ -151,19 +176,21 @@ impl Interval {
     /// One narrowing step from a widened bound toward a concrete bound.
     /// Keeps soundness (never smaller than the concrete bound on the downward
     /// side beyond what the meet proves).
-    pub fn narrow(&self, other: &Self) -> Self {
+    pub fn narrow(&self, other: &Self, ty: IntType) -> Self {
         // narrowing(old, new) where old is the widened value and new the next
         // iterate: move uncertain bounds toward the new value.
         match (self, other) {
             (Interval::Bottom, b) => *b,
             (a, Interval::Bottom) => *a,
+            (Interval::Unsigned128Top, b) => *b,
+            (_, Interval::Unsigned128Top) => *self,
             (Interval::Range { lo: l1, hi: h1 }, Interval::Range { lo: l2, hi: h2 }) => {
-                let lo = if *l1 == i128::MIN && *l2 > i128::MIN {
+                let lo = if *l1 == ty.min_value() && *l2 > ty.min_value() {
                     *l2
                 } else {
                     *l1
                 };
-                let hi = if *h1 == i128::MAX && *h2 < i128::MAX {
+                let hi = if *h1 == ty.max_value() && *h2 < ty.max_value() {
                     *h2
                 } else {
                     *h1
@@ -178,6 +205,7 @@ impl fmt::Display for Interval {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Interval::Bottom => write!(f, "⊥"),
+            Interval::Unsigned128Top => write!(f, "[0, {}]", u128::MAX),
             Interval::Range { lo, hi } => write!(f, "[{lo}, {hi}]"),
         }
     }
@@ -223,6 +251,7 @@ fn checked_mul(ty: IntType, a: i128, b: i128) -> Option<i128> {
 pub fn add(ty: IntType, a: Interval, b: Interval) -> Interval {
     match (a, b) {
         (Interval::Bottom, _) | (_, Interval::Bottom) => Interval::Bottom,
+        (Interval::Unsigned128Top, _) | (_, Interval::Unsigned128Top) => full_range(ty),
         (Interval::Range { lo: l1, hi: h1 }, Interval::Range { lo: l2, hi: h2 }) => {
             match (checked_add(ty, l1, l2), checked_add(ty, h1, h2)) {
                 (Some(lo), Some(hi)) => Interval::Range { lo, hi },
@@ -236,6 +265,7 @@ pub fn add(ty: IntType, a: Interval, b: Interval) -> Interval {
 pub fn sub(ty: IntType, a: Interval, b: Interval) -> Interval {
     match (a, b) {
         (Interval::Bottom, _) | (_, Interval::Bottom) => Interval::Bottom,
+        (Interval::Unsigned128Top, _) | (_, Interval::Unsigned128Top) => full_range(ty),
         (Interval::Range { lo: l1, hi: h1 }, Interval::Range { lo: l2, hi: h2 }) => {
             match (checked_sub(ty, l1, h2), checked_sub(ty, h1, l2)) {
                 (Some(lo), Some(hi)) => Interval::Range { lo, hi },
@@ -249,6 +279,7 @@ pub fn sub(ty: IntType, a: Interval, b: Interval) -> Interval {
 pub fn mul(ty: IntType, a: Interval, b: Interval) -> Interval {
     match (a, b) {
         (Interval::Bottom, _) | (_, Interval::Bottom) => Interval::Bottom,
+        (Interval::Unsigned128Top, _) | (_, Interval::Unsigned128Top) => full_range(ty),
         (Interval::Range { lo: l1, hi: h1 }, Interval::Range { lo: l2, hi: h2 }) => {
             let products = [
                 checked_mul(ty, l1, l2),
@@ -256,6 +287,9 @@ pub fn mul(ty: IntType, a: Interval, b: Interval) -> Interval {
                 checked_mul(ty, h1, l2),
                 checked_mul(ty, h1, h2),
             ];
+            if products.iter().any(Option::is_none) {
+                return full_range(ty);
+            }
             let lo = products.iter().flatten().min().copied();
             let hi = products.iter().flatten().max().copied();
             match (lo, hi) {
@@ -272,6 +306,7 @@ pub fn compare(_ty: IntType, a: Interval, b: Interval, op: &str) -> Rel {
     use Rel::*;
     match (a, b) {
         (Interval::Bottom, _) | (_, Interval::Bottom) => Maybe,
+        (Interval::Unsigned128Top, _) | (_, Interval::Unsigned128Top) => Maybe,
         (Interval::Range { lo: l1, hi: h1 }, Interval::Range { lo: l2, hi: h2 }) => {
             // Over-approximate: the interval result over the type range is
             // decisive when all combinations satisfy / violate the relation.
@@ -323,27 +358,20 @@ pub fn iterate_loop(
     //          if x_{n+1} == x_n, done.
     //          else after threshold iterations, widen and narrow.
     let mut current = init;
-    let mut widened = false;
     for _ in 0..32 {
-        let next = current.join(&step(current));
-        if next == current {
-            return current;
+        let next = init.join(&step(current));
+        if current.join(&next) == current {
+            // One narrowing, accepted only if the resulting interval remains
+            // a post-fixpoint. This check also defends non-monotone callbacks.
+            let narrowed = current.narrow(&next, ty);
+            let image = init.join(&step(narrowed));
+            return if narrowed.join(&image) == narrowed {
+                narrowed
+            } else {
+                current
+            };
         }
-        if widened {
-            // After widening, do one narrowing toward the last iterate.
-            return current.narrow(&next);
-        }
-        // Widen: if the interval keeps growing, jump unstable bounds to top.
-        let wide = current.widen(&next, ty);
-        if wide != next {
-            widened = true;
-        }
-        current = wide;
-        let narrowed = current.narrow(&next);
-        if narrowed != current {
-            current = narrowed;
-            widened = true;
-        }
+        current = current.widen(&next, ty);
     }
     // Safety net: return a sound over-approximation (top).
     full_range(ty)
@@ -405,6 +433,43 @@ mod tests {
     }
 
     #[test]
+    fn mul_one_overflowing_endpoint_also_yields_top() {
+        let ty = int64();
+        let a = Interval::Range {
+            lo: 0,
+            hi: i64::MAX as i128,
+        };
+        let b = Interval::Range { lo: 0, hi: 2 };
+        assert_eq!(mul(ty, a, b), full_range(ty));
+    }
+
+    #[test]
+    fn full_128_bit_sorts_do_not_panic_or_lose_unsigned_values() {
+        let signed = IntType::bitvec(128, true).unwrap();
+        assert_eq!(
+            full_range(signed),
+            Interval::Range {
+                lo: i128::MIN,
+                hi: i128::MAX
+            }
+        );
+        assert_eq!(
+            Interval::constant(signed, i128::MIN),
+            Interval::Range {
+                lo: i128::MIN,
+                hi: i128::MIN
+            }
+        );
+        let unsigned = IntType::bitvec(128, false).unwrap();
+        assert_eq!(full_range(unsigned), Interval::Unsigned128Top);
+        assert_eq!(Interval::constant(unsigned, -1), Interval::Unsigned128Top);
+        assert_eq!(
+            Interval::constant(IntType::bitvec(8, true).unwrap(), 255),
+            Interval::Range { lo: -1, hi: -1 }
+        );
+    }
+
+    #[test]
     fn widening_stabilizes() {
         let ty = int64();
         // A loop variable i that repeatedly grows by 1 from 0: i := i + 1
@@ -412,7 +477,9 @@ mod tests {
         let r = iterate_loop(ty, Interval::constant(ty, 0), step);
         // With widening the unstable upper bound jumps to top.
         assert_eq!(r.hi(), ty.max_value());
-        assert_eq!(r.lo(), 0);
+        // The next ADD can overflow: the normative transfer then returns
+        // the full type range, including its negative half.
+        assert_eq!(r.lo(), ty.min_value());
     }
 
     #[test]
@@ -496,12 +563,32 @@ mod tests {
             // Loop body never runs: i stays 0, s stays 0.
             return (Interval::constant(ty, 0), Interval::constant(ty, 0));
         }
-        // i starts 0, ranges up to n-1.
-        let i = Interval::range(ty, 0, n - 1);
-        // s accumulates 0 + 1 + ... + (n-1) = n*(n-1)/2.
-        let s_max = n * (n - 1) / 2;
-        let s = Interval::range(ty, 0, s_max.max(0));
-        (i, s)
+        let zero = Interval::constant(ty, 0);
+        let one = Interval::constant(ty, 1);
+        let body_guard = Interval::range(ty, 0, n - 1);
+        let mut state = (zero, zero);
+        let transfer = |(i, s): (Interval, Interval)| {
+            let active_i = i.meet(&body_guard);
+            (
+                zero.join(&add(ty, active_i, one)),
+                zero.join(&add(ty, s, active_i)),
+            )
+        };
+        for _ in 0..32 {
+            let next = transfer(state);
+            if state.0.join(&next.0) == state.0 && state.1.join(&next.1) == state.1 {
+                let narrowed = (state.0.narrow(&next.0, ty), state.1.narrow(&next.1, ty));
+                let image = transfer(narrowed);
+                if narrowed.0.join(&image.0) == narrowed.0
+                    && narrowed.1.join(&image.1) == narrowed.1
+                {
+                    return narrowed;
+                }
+                return state;
+            }
+            state = (state.0.widen(&next.0, ty), state.1.widen(&next.1, ty));
+        }
+        panic!("Sum widening did not converge");
     }
 }
 
@@ -511,12 +598,14 @@ impl Interval {
     fn lo(&self) -> i128 {
         match self {
             Interval::Bottom => i128::MIN,
+            Interval::Unsigned128Top => 0,
             Interval::Range { lo, .. } => *lo,
         }
     }
     fn hi(&self) -> i128 {
         match self {
             Interval::Bottom => i128::MAX,
+            Interval::Unsigned128Top => i128::MAX,
             Interval::Range { hi, .. } => *hi,
         }
     }

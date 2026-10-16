@@ -151,6 +151,42 @@ impl<B: MemoryBackend> Default for MemoryState<B> {
 }
 
 impl<B: MemoryBackend> MemoryState<B> {
+    /// Initial global reads, before writes are overlaid. Summary substitution
+    /// must never mistake a stored parameter for the initial global symbol.
+    pub fn summary_global_reads(&self) -> Vec<(String, B::Expr)> {
+        self.initial
+            .values()
+            .filter_map(|(pointer, _, expression)| {
+                if pointer.targets.len() != 1 {
+                    return None;
+                }
+                if let Some(Loc::Global(global)) = pointer.targets.iter().next() {
+                    Some((global.clone(), expression.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// Last known value written to each global location. Any other write is
+    /// retained as Unknown, so callers cannot silently assume memory purity.
+    pub fn summary_delta(&self) -> Vec<(Loc, B::Expr)> {
+        let mut writes = BTreeMap::new();
+        for write in &self.store_log {
+            let location = if write.pointer.targets.len() == 1 {
+                match write.pointer.targets.iter().next() {
+                    Some(Loc::Global(global)) => Loc::Global(global.clone()),
+                    _ => Loc::Unknown,
+                }
+            } else {
+                Loc::Unknown
+            };
+            writes.insert(location, write.value.clone());
+        }
+        writes.into_iter().collect()
+    }
+
     /// Both children receive unique future activation namespaces. Existing
     /// allocation identities are preserved. Repeated forks of the parent are safe.
     pub fn fork(&mut self) -> (Self, Self) {

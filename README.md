@@ -14,6 +14,10 @@ intégrés.
 **v0.3 validée : 29 AC PASS** (moteur symbolique + SMT), `VERIFY OK v0.3`,
 non-régression 42 AC v0.1 + 25 AC v0.2. Les limites et approximations de v0.3
 sont explicites dans `docs/soundness-and-limits.md`.
+**v0.4 validée : 14 AC PASS**, `VERIFY OK v0.4` ; non-régression
+42 AC v0.1 + 25 AC v0.2 + 29 AC v0.3. Graphe d'appels, résumés bornés,
+intervalles et interprétation concrète CIR sont disponibles dans le périmètre
+documenté. Voir [la validation v0.4](docs/validation/v0.4.md).
 Lire [le journal de reprise](docs/work-log.md) et
 [le rapport de blocage](docs/validation/BLOCKED-v0.2-quota.md).
 Il n'existe pas de livraison v0.7 ni de promesse d'API/MCP opérationnels.
@@ -58,7 +62,7 @@ persistées ; un run laissé `RUNNING` après un crash exige un
 ## Parcours v0.1 depuis la racine
 
 Le parcours CIR est disponible ; `verify.sh` inclut maintenant le Go et termine
-par `VERIFY OK v0.2`. Ne pas exécuter
+par `VERIFY OK v0.4`. Ne pas exécuter
 le code du projet étudié : les fixtures Go servent ici de sources et provenance.
 
 ```sh
@@ -84,10 +88,39 @@ et des issues `UNANALYZED`, sans inventer de résultats symboliques.
 `VERIFY OK v0.1` a été constaté au checkpoint v0.1 ; la validation actuelle
 v0.2 inclut sa non-régression. `python3 scripts/validate-v02.py` rejoue les 25 AC.
 
+## Analyse interprocédurale v0.4
+
+Après ingestion Go du laboratoire :
+
+```sh
+target/debug/ske paths explore --db "$DB" --source example.Entry --target example.helper --format json
+python3 scripts/validate-v04.py
+```
+
+`paths explore` accepte `--max-depth`, `--max-paths`, `--max-nodes` et
+la pagination `--limit`/`--offset`. Un appel inconnu rend `incomplete=true`,
+jamais une preuve d'inaccessibilité.
+
+Les résumés persistés sont accessibles via l'API Rust applicative :
+
+```rust
+let query = ske_query::Query::open(db_path)?;
+let summary = query.summarize_scalar(
+    "latest", None, "example.Entry", &Default::default(),
+)?;
+```
+
+La composition des globales connues préserve l'état mémoire entre les appels.
+La récursion résiduelle reste `PARTIAL` ; les effets non modélisés restent
+opaques. Aucun code hôte du projet étudié n'est exécuté.
+Pour les boucles, un fichier budget contenant
+`[budget]` puis `loop_mode = "intervals"` active l'abstraction ;
+le défaut reste `"unroll"`.
+
 ## Documentation
 
 - [Architecture](docs/architecture.md)
 - [Soundness et limites](docs/soundness-and-limits.md)
 - [Contrat adaptateur](docs/adapter-contract.md)
-- [ADR](docs/adr/ADR-001.md) (001 à 019)
+- [ADR](docs/adr/ADR-001.md) (001 à 021)
 - [Mesures](tests/benchmarks/README.md)

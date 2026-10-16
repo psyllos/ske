@@ -742,6 +742,10 @@ dependencies = [
 [[package]]
 name = "ske-abstract"
 version = "0.1.0"
+dependencies = [
+ "ske-cir",
+ "ske-symbolic",
+]
 
 [[package]]
 name = "ske-cir"
@@ -808,6 +812,7 @@ dependencies = [
  "ske-ingest",
  "ske-solver",
  "ske-storage",
+ "ske-summary",
  "ske-symbolic",
  "ske-verify",
  "tempfile",
@@ -835,12 +840,25 @@ dependencies = [
 ]
 
 [[package]]
-name = "ske-symbolic"
+name = "ske-summary"
 version = "0.1.0"
 dependencies = [
+ "serde_json",
  "ske-cir",
  "ske-common",
  "ske-solver",
+ "ske-symbolic",
+]
+
+[[package]]
+name = "ske-symbolic"
+version = "0.1.0"
+dependencies = [
+ "ske-abstract",
+ "ske-cir",
+ "ske-common",
+ "ske-solver",
+ "ske-summary",
 ]
 
 [[package]]

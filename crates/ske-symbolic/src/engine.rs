@@ -112,6 +112,9 @@ pub struct Exit {
     pub soundness: Soundness,
     pub taken_outcomes: Path,
     pub values: Vec<ExprId>,
+    /// A residual recursive invocation was overapproximated on this path.
+    pub partial: bool,
+    pub memory_delta: Vec<(Loc, ExprId)>,
 }
 #[derive(Clone, Debug)]
 pub enum Event {
@@ -145,6 +148,11 @@ pub struct OutcomeResult {
 }
 pub struct Report {
     pub arena: ExprArena,
+    /// Closed scalar callees whose cases were actually substituted.
+    pub composed_calls: BTreeSet<String>,
+    pub global_reads: BTreeMap<ExprId, String>,
+    pub tuple_extractions: BTreeSet<String>,
+    pub summary_unknowns: BTreeSet<String>,
     pub arrivals: Vec<Arrival>,
     pub queries: Vec<Query>,
     pub exits: Vec<Exit>,
@@ -163,6 +171,10 @@ struct State {
     instruction: usize,
     predecessor: Option<String>,
     env: Arc<BTreeMap<String, ExprId>>,
+    tuples: Arc<BTreeMap<String, Vec<ExprId>>>,
+    partial: bool,
+    residual_return: bool,
+    abstract_headers: Arc<BTreeSet<String>>,
     constraints: Arc<Vec<ExprId>>,
     phi_env: Arc<BTreeMap<String, ExprId>>,
     back_edges: Arc<BTreeMap<String, u32>>,
@@ -272,6 +284,8 @@ struct Runner<'a> {
     backend: Backend,
     field_addresses: BTreeMap<(ExprId, u32), ExprId>,
     next_memory_id: u64,
+    intervals: BTreeMap<String, ske_abstract::Interval>,
+    intervals_safe: bool,
 }
 impl Runner<'_> {
     fn diagnostic(&mut self, code: &str) {
@@ -393,11 +407,20 @@ impl Runner<'_> {
         }
     }
     fn exit(&mut self, s: &State, ins: &proto::InstructionDef, kind: &str) -> Result<(), String> {
-        let values = ins
+        let mut values: Vec<_> = ins
             .operand_value_ids
             .iter()
             .filter_map(|v| s.env.get(v).copied())
             .collect();
+        if s.residual_return {
+            values = self
+                .program
+                .function
+                .return_type_ids
+                .iter()
+                .map(|ty| self.fresh(expression_type(self.program, ty)?))
+                .collect::<Result<_, _>>()?;
+        }
         let e = Exit {
             kind: kind.into(),
             instruction_id: ins.id.clone(),
@@ -405,6 +428,8 @@ impl Runner<'_> {
             taken_outcomes: s.path.clone(),
             soundness: s.soundness,
             values,
+            partial: s.partial,
+            memory_delta: s.memory.summary_delta(),
         };
         (self.emit)(&Event::Exit(e.clone()));
         self.report.exits.push(e);
@@ -437,8 +462,67 @@ impl Runner<'_> {
                 .or_default();
             *count += 1;
             if *count > self.budget.loop_unroll {
-                self.cut("LOOP_BOUND_REACHED");
-                return;
+                let header = &e.definition.target_block_id;
+                if self.budget.loop_mode == "intervals" && self.intervals_safe {
+                    if s.abstract_headers.contains(header) {
+                        return;
+                    }
+                    Arc::make_mut(&mut s.abstract_headers).insert(header.clone());
+                    let phis: Vec<_> = self.program.blocks[header]
+                        .instructions
+                        .iter()
+                        .filter(|i| i.opcode == "PHI")
+                        .cloned()
+                        .collect();
+                    for phi in phis {
+                        let inputs = &phi.payload.as_ref().expect("validated PHI").phi_inputs;
+                        if inputs.iter().all(|i| i.value_id == inputs[0].value_id) {
+                            continue;
+                        }
+                        let ty = expression_type(
+                            self.program,
+                            &self.program.values[&phi.result_value_id].type_id,
+                        )
+                        .expect("validated PHI type");
+                        let value = self
+                            .backend
+                            .arena
+                            .symbol(
+                                ty.clone(),
+                                format!("loopvar:{}:{}", phi.result_value_id, self.next_memory_id),
+                            )
+                            .expect("valid loop symbol");
+                        if let (
+                            Sort::BitVec { width, .. },
+                            Some(ske_abstract::Interval::Range { lo, hi }),
+                        ) = (&ty.sort, self.intervals.get(&phi.result_value_id))
+                        {
+                            let mask = u128::MAX >> (128 - width);
+                            for (bound, op) in [(*lo, BinaryOp::Ge), (*hi, BinaryOp::Le)] {
+                                let constant = intern(
+                                    &mut self.backend.arena,
+                                    ty.clone(),
+                                    ExprKind::Const(Constant::Bits(bound as u128 & mask)),
+                                )
+                                .expect("valid interval bound");
+                                let guard =
+                                    binary(&mut self.backend.arena, op, value, constant, bool_ty())
+                                        .expect("valid interval constraint");
+                                Arc::make_mut(&mut s.constraints).push(guard);
+                            }
+                        }
+                        Arc::make_mut(&mut s.env).insert(phi.result_value_id.clone(), value);
+                    }
+                    s.soundness = s.soundness.max(Soundness::Overapprox);
+                    s.memory.havoc_all_memory();
+                    s.memory_id = self.next_memory_id;
+                    self.next_memory_id += 1;
+                    self.assumption("LOOP_INTERVAL_ABSTRACTION");
+                    self.diagnostic("LOOP_ABSTRACTED");
+                } else {
+                    self.cut("LOOP_BOUND_REACHED");
+                    return;
+                }
             }
         }
         if let Some(outcome) = &e.outcome_id {
@@ -524,9 +608,52 @@ pub fn analyze(
     cancelled: &(dyn Fn() -> bool + Sync),
     emit: &mut dyn FnMut(&Event),
 ) -> Result<Report, String> {
-    if budget.loop_mode != "unroll" {
-        return Err("v0.3 supports only loop_mode=unroll".into());
+    analyze_with_summaries(
+        program,
+        budget,
+        solver,
+        initial_constraints,
+        cancelled,
+        emit,
+        None,
+    )
+}
+
+/// Apply complete scalar callee summaries resolved by the application layer.
+/// Keys are call instruction IDs, not guessed function names. `None` retains
+/// the v0.3 call semantics exactly.
+#[allow(clippy::too_many_arguments)]
+pub fn analyze_with_summaries(
+    program: &Program,
+    budget: &Budget,
+    solver: &mut dyn Solver,
+    initial_constraints: impl FnOnce(
+        &mut ExprArena,
+        &BTreeMap<String, ExprId>,
+    ) -> Result<Vec<ExprId>, String>,
+    cancelled: &(dyn Fn() -> bool + Sync),
+    emit: &mut dyn FnMut(&Event),
+    summaries: Option<&BTreeMap<String, crate::summary::FunctionSummary>>,
+) -> Result<Report, String> {
+    if !matches!(budget.loop_mode.as_str(), "unroll" | "intervals") {
+        return Err("loop_mode must be unroll or intervals".into());
     }
+    let instructions: Vec<_> = program
+        .blocks
+        .values()
+        .flat_map(|b| b.instructions.iter().cloned())
+        .collect();
+    let intervals_safe = !instructions.iter().any(|i| {
+        matches!(
+            i.opcode.as_str(),
+            "ALLOC" | "NEW_OBJECT" | "ADDRESS_OF" | "FIELD_ADDR" | "INDEX_ADDR" | "MAKE_CLOSURE"
+        )
+    });
+    let intervals = if budget.loop_mode == "intervals" {
+        ske_abstract::cir::infer(&program.types, &program.values, &instructions)?
+    } else {
+        BTreeMap::new()
+    };
     let mut r = Runner {
         program,
         budget,
@@ -536,12 +663,18 @@ pub fn analyze(
         cache: BTreeMap::new(),
         field_addresses: BTreeMap::new(),
         next_memory_id: 1,
+        intervals,
+        intervals_safe,
         backend: Backend {
             arena: ExprArena::new(),
             havoc: 0,
         },
         report: Report {
             arena: ExprArena::new(),
+            composed_calls: BTreeSet::new(),
+            global_reads: BTreeMap::new(),
+            tuple_extractions: BTreeSet::new(),
+            summary_unknowns: BTreeSet::new(),
             arrivals: vec![],
             queries: vec![],
             exits: vec![],
@@ -646,6 +779,10 @@ pub fn analyze(
         phi_env: Arc::new(env.clone()),
         predecessor: None,
         env: Arc::new(env),
+        tuples: Arc::new(BTreeMap::new()),
+        partial: false,
+        residual_return: false,
+        abstract_headers: Arc::new(BTreeSet::new()),
         constraints: Arc::new(constraints),
         back_edges: Arc::new(BTreeMap::new()),
         path: Path(None),
@@ -657,7 +794,7 @@ pub fn analyze(
     let retreating = program.retreating_edges();
     let start = Instant::now();
     let mut seen = BTreeSet::new();
-    while let Some(mut s) = queue.pop_front() {
+    'exploration: while let Some(mut s) = queue.pop_front() {
         if cancelled() {
             r.report.exploration_closed = false;
             r.report.status = RunStatus::Cancelled;
@@ -698,8 +835,9 @@ pub fn analyze(
             (*s.constraints).clone(),
             (*s.back_edges).clone(),
             s.memory_id,
-            s.soundness,
+            (s.soundness, s.partial, s.residual_return),
             s.path.ordered(),
+            ((*s.tuples).clone(), (*s.abstract_headers).clone()),
         );
         if !seen.insert(key) {
             continue;
@@ -815,6 +953,177 @@ pub fn analyze(
                 }
             }
             continue;
+        }
+        if ins.opcode == "CALL" {
+            let summary = summaries.and_then(|all| all.get(&ins.id));
+            if let Some(summary) = summary {
+                r.report
+                    .summary_unknowns
+                    .extend(summary.unknowns.iter().cloned());
+                if !summary.composable && summary.precision == crate::summary::Precision::Partial {
+                    s.partial = true;
+                }
+            }
+            if let Some(summary) = summary.filter(|summary| {
+                summary.covers_inputs
+                    && summary.composable
+                    && summary.cases.iter().all(|case| case.kind == "RETURN")
+            }) {
+                if !matches!(ins.payload.as_ref().and_then(|p| p.details.as_ref()),
+                    Some(Details::Call(call)) if call.dispatch_kind == "STATIC" && call.world_closed)
+                {
+                    return Err("summary application requires closed static target".into());
+                }
+                if ins.operand_value_ids.len() != summary.parameter_symbols.len() + 1 {
+                    return Err("summary argument arity mismatch".into());
+                }
+                let mut parameters: BTreeMap<String, ExprId> = summary
+                    .parameter_symbols
+                    .iter()
+                    .cloned()
+                    .zip(
+                        ins.operand_value_ids[1..]
+                            .iter()
+                            .map(|id| {
+                                s.env
+                                    .get(id)
+                                    .copied()
+                                    .ok_or_else(|| format!("missing argument {id}"))
+                            })
+                            .collect::<Result<Vec<_>, _>>()?,
+                    )
+                    .collect();
+                let namespace = format!("summary:{}:{}", ins.id, r.next_memory_id);
+                r.next_memory_id += 1;
+                r.report.composed_calls.insert(ins.id.clone());
+                for (symbol, global, ty) in &summary.global_reads {
+                    let value = program
+                        .values
+                        .values()
+                        .find(|v| v.role == "GLOBAL" && &v.symbol_id == global)
+                        .ok_or("callee global not present in caller unit")?;
+                    let address = s.env.get(&value.id).ok_or("global address missing")?;
+                    let pointer = s.pointers.get(address).ok_or("global pointer missing")?;
+                    let loaded = s.memory.load(&mut r.backend, pointer, ty);
+                    parameters.insert(symbol.clone(), loaded);
+                    for (global, expression) in s.memory.summary_global_reads() {
+                        r.report.global_reads.insert(expression, global);
+                    }
+                }
+                let mut memo = BTreeMap::new();
+                for assumption in &summary.assumptions {
+                    r.assumption(assumption);
+                }
+                for case in &summary.cases {
+                    if cancelled() {
+                        r.report.exploration_closed = false;
+                        r.report.status = RunStatus::Cancelled;
+                        break 'exploration;
+                    }
+                    let (child, rest) = s.memory.fork();
+                    s.memory = rest;
+                    let mut t = s.clone();
+                    t.memory = child;
+                    t.memory_id = r.next_memory_id;
+                    r.next_memory_id += 1;
+                    for guard in &case.constraints {
+                        let guard = crate::summary::substitute(
+                            &summary.arena,
+                            &mut r.backend.arena,
+                            *guard,
+                            &parameters,
+                            &namespace,
+                            &mut memo,
+                        )?;
+                        Arc::make_mut(&mut t.constraints).push(guard);
+                    }
+                    let (_, answer) = r.query(&t.constraints)?;
+                    if matches!(answer, CheckResult::Unsat) {
+                        continue;
+                    }
+                    if !r.state_budget() {
+                        break;
+                    }
+                    t.soundness = t.soundness.max(case.soundness);
+                    t.partial |= case.partial;
+                    // At the recursive bound, the remainder of this activation
+                    // is one residual return H. Outer activations still compose
+                    // their arithmetic around that return (§19 Fact table).
+                    t.residual_return |= summary.residual;
+                    if !matches!(answer, CheckResult::Sat { .. }) {
+                        t.soundness = t.soundness.max(Soundness::Opaque);
+                    }
+                    let returns = case
+                        .values
+                        .iter()
+                        .map(|id| {
+                            crate::summary::substitute(
+                                &summary.arena,
+                                &mut r.backend.arena,
+                                *id,
+                                &parameters,
+                                &namespace,
+                                &mut memo,
+                            )
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    for (location, expression) in &case.memory_delta {
+                        let Loc::Global(global) = location else {
+                            return Err("unmodeled callee write".into());
+                        };
+                        let definition = program
+                            .values
+                            .values()
+                            .find(|v| v.role == "GLOBAL" && &v.symbol_id == global)
+                            .ok_or("callee write global absent")?;
+                        let address = t
+                            .env
+                            .get(&definition.id)
+                            .ok_or("callee write global address absent")?;
+                        let pointer = t
+                            .pointers
+                            .get(address)
+                            .ok_or("callee write global pointer absent")?;
+                        let written = crate::summary::substitute(
+                            &summary.arena,
+                            &mut r.backend.arena,
+                            *expression,
+                            &parameters,
+                            &namespace,
+                            &mut memo,
+                        )?;
+                        t.memory.store(pointer, written);
+                    }
+                    if !ins.result_value_id.is_empty() {
+                        let value = if returns.len() == 1 {
+                            returns[0]
+                        } else {
+                            let ty = expression_type(
+                                program,
+                                &program.values[&ins.result_value_id].type_id,
+                            )?;
+                            let marker = r.fresh(ty)?;
+                            Arc::make_mut(&mut t.tuples)
+                                .insert(ins.result_value_id.clone(), returns);
+                            marker
+                        };
+                        Arc::make_mut(&mut t.env).insert(ins.result_value_id.clone(), value);
+                    }
+                    for outcome in case.taken_outcomes.ordered() {
+                        t.path = t.path.push(outcome);
+                    }
+                    t.instruction += 1;
+                    queue.push_back(t);
+                }
+                continue;
+            }
+            if summaries.is_some()
+                && summary.is_none()
+                && matches!(ins.payload.as_ref().and_then(|p| p.details.as_ref()),
+                    Some(Details::Call(call)) if call.dispatch_kind != "STATIC" || !call.world_closed)
+            {
+                r.diagnostic("CALL_TARGET_UNRESOLVED");
+            }
         }
         let operands = ins
             .operand_value_ids
@@ -943,6 +1252,9 @@ pub fn analyze(
                         &pointer,
                         &result_ty.clone().ok_or("load type")?,
                     ));
+                    for (global, expression) in s.memory.summary_global_reads() {
+                        r.report.global_reads.insert(expression, global);
+                    }
                     if pointer.precision == Precision::Unknown {
                         s.soundness = s.soundness.max(Soundness::Opaque);
                     }
@@ -961,14 +1273,23 @@ pub fn analyze(
                     Some(Details::Field(f)) => f.field_index,
                     _ => return Err("field payload missing".into()),
                 };
-                result = Some(intern(
-                    &mut r.backend.arena,
-                    result_ty.clone().ok_or("field type")?,
-                    ExprKind::Field {
-                        base: operands[0],
-                        index,
-                    },
-                )?);
+                result = if let Some(values) = s.tuples.get(&ins.operand_value_ids[0]) {
+                    r.report.tuple_extractions.insert(ins.id.clone());
+                    Some(
+                        *values
+                            .get(index as usize)
+                            .ok_or("summary tuple field out of range")?,
+                    )
+                } else {
+                    Some(intern(
+                        &mut r.backend.arena,
+                        result_ty.clone().ok_or("field type")?,
+                        ExprKind::Field {
+                            base: operands[0],
+                            index,
+                        },
+                    )?)
+                };
             }
             "CALL" => {
                 let call = match ins.payload.as_ref().and_then(|p| p.details.as_ref()) {
@@ -1030,15 +1351,30 @@ pub fn analyze(
             }
             "PHI" => {
                 let predecessor = s.predecessor.as_ref().ok_or("PHI without predecessor")?;
-                let input = ins
+                let inputs = &ins
                     .payload
                     .as_ref()
                     .ok_or("PHI payload missing")?
-                    .phi_inputs
-                    .iter()
-                    .find(|p| &p.predecessor_block_id == predecessor)
-                    .ok_or("PHI predecessor missing")?;
-                result = Some(*s.phi_env.get(&input.value_id).ok_or("PHI value missing")?);
+                    .phi_inputs;
+                if s.abstract_headers.contains(&s.block)
+                    && inputs.iter().any(|i| i.value_id != inputs[0].value_id)
+                {
+                    result = Some(
+                        *s.env
+                            .get(&ins.result_value_id)
+                            .ok_or("abstract PHI missing")?,
+                    );
+                } else {
+                    let input = ins
+                        .payload
+                        .as_ref()
+                        .ok_or("PHI payload missing")?
+                        .phi_inputs
+                        .iter()
+                        .find(|p| &p.predecessor_block_id == predecessor)
+                        .ok_or("PHI predecessor missing")?;
+                    result = Some(*s.phi_env.get(&input.value_id).ok_or("PHI value missing")?);
+                }
             }
             "SELECT" => {
                 result = Some(intern(
@@ -1157,6 +1493,9 @@ pub fn analyze(
         s.instruction += 1;
         queue.push_back(s);
     }
+    if r.report.exits.iter().any(|exit| exit.partial) {
+        r.report.exploration_closed = false;
+    }
     if r.report.status != RunStatus::Cancelled {
         r.report.status = if r.report.exploration_closed {
             RunStatus::Completed
@@ -1171,9 +1510,13 @@ pub fn analyze(
             .iter()
             .filter(|a| a.outcome_id == outcome)
             .collect::<Vec<_>>();
-        r.report
-            .outcomes
-            .insert(outcome, classify(&arrivals, r.report.exploration_closed));
+        let mut result = classify(&arrivals, r.report.exploration_closed);
+        if result.status == Classification::UnreachableCandidate
+            && r.report.assumptions.contains("LOOP_INTERVAL_ABSTRACTION")
+        {
+            result.soundness = result.soundness.max(Soundness::Overapprox);
+        }
+        r.report.outcomes.insert(outcome, result);
     }
     r.report.arena = r.backend.arena;
     Ok(r.report)

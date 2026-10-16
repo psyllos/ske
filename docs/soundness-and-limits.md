@@ -5,7 +5,7 @@
 Importer et consulter des inventaires structurels et leur provenance est
 validé en v0.1 (42 AC, rapport séparé). Une base
 structurellement valide ne démontre pas la sémantique du programme source.
-v0.2 est validée (25 AC) ; v0.3 est en validation. La conformité structurelle Go
+v0.2 est validée (25 AC), v0.3 (29 AC) et v0.4 (14 AC) également. La conformité structurelle Go
 ne doit pas être présentée comme une connaissance comportementale complète.
 En particulier, les nil Go hors du contrat littéral CIR sont explicitement
 opaques et ne permettent aucune déduction précise de nullité (ADR-020).
@@ -94,8 +94,53 @@ ne peuvent être éliminés pour obtenir artificiellement une preuve.
   le run ne change plus de statut ; les candidats non vérifiés deviennent
   UNKNOWN si une annulation interrompt la vérification.
 
-Interprocédural v0.4, comportements/réutilisation v0.5, Rust/Java v0.6,
+Comportements/réutilisation v0.5, Rust/Java v0.6 et
 API/MCP/LLM v0.7 restent hors livraison. Aucun code étudié arbitraire n'est
 exécuté ; seul le runner concret de confiance du dépôt est autorisé par les
 tests différentiels. Les commandes réellement exécutées sont dans les rapports
 de validation ; les obligations décrites dans un ADR ne sont pas des PASS.
+
+## Périmètre et frontières v0.4
+
+- **Résumés** : calcul avec paramètres symboliques, un cas par sortie,
+  import mémoïsé du DAG dans l'arène appelante, gardes filtrées par SMT,
+  retours multiples et provenance IR conservés. Les globales initiales sont
+  libres ; les lectures et écritures globales connues sont composées avec
+  l'état mémoire du site d'appel (y compris entre deux appels successifs).
+  L'API applicative est `Query::summarize_scalar`, pour le contexte par
+  défaut ; elle persiste les résumés dans une transaction SQLite.
+- **Récursion** : deux dépliages par défaut ; le reste de l'activation devient
+  un retour havoc, avec cas `PARTIAL` et `RECURSION_BOUND`. Ce n'est pas un
+  point fixe récursif exact. Une limite de profondeur de composition empêche
+  une récursion hôte non bornée ; son dépassement échoue explicitement.
+- **Effets et exceptions** : seuls les résumés composables à sorties `RETURN`
+  sont substitués précisément. Appels ouverts, effets mémoire ambigus,
+  concurrence et sorties exceptionnelles non composées gardent le traitement
+  havoc/OPAQUE et les hypothèses v0.3. Les effets inconnus sont persistés
+  comme `UNKNOWN_EFFECT`, jamais omis pour fabriquer un résumé EXACT.
+  Le mode `branches analyze` par défaut conserve la sémantique locale v0.3.
+- **Intervalles** : activés par `loop_mode="intervals"`. Les équations SSA
+  joignent tous les prédécesseurs, élargissent puis rétrécissent une fois.
+  L'absence de raffinement systématique par les gardes peut donner la plage
+  complète du type ; tout débordement possible donne cette plage complète.
+  La moitié haute des uint128 est arrondie à top (pas tronquée à i128::MAX).
+  L'état générique des PHI est exploré une fois, avec mémoire havockée,
+  soundness OVERAPPROX, hypothèse et diagnostic explicites. Les boucles avec
+  allocations/adresses dynamiques restent dans le traitement borné avec coupe :
+  elles ne sont pas annoncées fermées par une abstraction de heap inexistante.
+- **Concret** : interprétation CIR locale bornée en instructions et récursion,
+  sans exécution de stub hôte (`errors.New`, par exemple). Paramètres,
+  globales injectées, appels statiques, PHI et retours multiples sont testés.
+  Les opérations non prises en charge retournent une erreur explicite.
+- **Cache et persistance** : empreinte calculée sur structure, profil
+  sémantique, contexte, dépendances triées, modèles et configuration.
+  Déduplication dans un snapshot ; pas de réutilisation incrémentale entre
+  snapshots annoncée. Une composition inter-unités avec des types/globaux
+  incompatibles échoue plutôt que de les assimiler silencieusement.
+- **Chemins** : graphe statique, identités SQLite distinctes entre unités,
+  chemins simples et budgets explicites. `NO_PATH_FOUND` ne signifie jamais
+  « prouvé inaccessible » ; `incomplete` conserve les limites de résolution.
+
+Validation : `python3 scripts/validate-v04.py` exécute les 14 AC, incluant
+`summary_matches_concrete` et 200 exécutions CIR concrètes de Sum contre les
+intervalles. Les 96 AC précédents sont rejoués. CI distante non exécutée.
