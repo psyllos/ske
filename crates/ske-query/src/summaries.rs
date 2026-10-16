@@ -17,7 +17,9 @@ fn engine_error(message: String) -> Error {
     Error::new("E_INTERNAL", message)
 }
 
-fn structural(program: &Program) -> String {
+/// §4.6 structural fingerprint: sha256 of the canonical serialization of the
+/// function's body (no flow ids, no spans). Shared with stale-check.
+pub(crate) fn structural(program: &Program) -> String {
     // Length-delimited protobuf records avoid ambiguous concatenation. Map
     // iteration is ordered, independent of SQLite IDs and extraction order.
     let mut bytes = Vec::new();
@@ -45,7 +47,6 @@ fn structural(program: &Program) -> String {
     }
     sha256_hex(bytes)
 }
-
 struct Calculation<'a> {
     db: &'a Connection,
     snapshot: i64,

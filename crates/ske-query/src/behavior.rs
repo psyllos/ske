@@ -739,7 +739,7 @@ pub fn stale_check(db: &Connection, repository: &str, from: &str, to: &str) -> R
     let mut unchanged = 0usize;
     let rules = rows(
         db,
-        "SELECT fr.id, f.symbol_id
+        "SELECT fr.id, f.symbol_id, f.id AS function_id
          FROM functional_rules fr
          JOIN behavior_cases b ON b.id=fr.behavior_case_id
          JOIN behavior_scenarios bs ON bs.id=b.behavior_id
@@ -750,24 +750,35 @@ pub fn stale_check(db: &Connection, repository: &str, from: &str, to: &str) -> R
     for rule in rules {
         let rule_id = rule["id"].as_i64().unwrap();
         let symbol_id = rule["symbol_id"].as_i64().unwrap();
+        let a_function = rule["function_id"].as_i64().unwrap();
         // Stale if the function vanished from B, or its structural fingerprint
-        // changed. Compare by (qualified_name, unit_key position): if B has no
-        // function with the same qualified name in the same-snapshot unit, the
-        // function disappeared.
-        let present: Option<i64> = db
+        // changed. Match the function in B by qualified_name within its unit,
+        // then compare §4.6 structural fingerprints (canonical body hash).
+        let b_function: Option<i64> = db
             .query_row(
-                "SELECT s2.id FROM symbols s2
+                "SELECT f2.id FROM functions f2
+                 JOIN symbols s2 ON s2.id=f2.symbol_id
                  JOIN symbols s1 ON s1.id=?1
-                 WHERE s2.snapshot_id=?2 AND s2.qualified_name=s1.qualified_name
-                   AND s2.id IN (
-                     SELECT s.id FROM symbols s JOIN compilation_units u ON u.id=s.unit_id
-                     WHERE u.snapshot_id=?2)",
+                 JOIN compilation_units u2 ON u2.id=s2.unit_id
+                 WHERE u2.snapshot_id=?2 AND s2.qualified_name=s1.qualified_name
+                   AND s2.unit_id IN (SELECT id FROM compilation_units WHERE snapshot_id=?2)",
                 params![symbol_id, to_snapshot],
                 |r| r.get(0),
             )
             .optional()
             .map_err(sql)?;
-        if present.is_none() {
+        let mut changed = false;
+        if let Some(b_function) = b_function {
+            let a = super::analysis_load::load(db, a_function).ok();
+            let b = super::analysis_load::load(db, b_function).ok();
+            match (a, b) {
+                (Some(a), Some(b)) => {
+                    changed = super::summaries::structural(&a) != super::summaries::structural(&b)
+                }
+                _ => changed = true,
+            }
+        }
+        if b_function.is_none() || changed {
             db.execute(
                 "UPDATE functional_rules SET validation_status='STALE' WHERE id=?1 AND validation_status='UNVALIDATED'",
                 [rule_id],

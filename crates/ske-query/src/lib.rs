@@ -419,7 +419,8 @@ impl Query {
         )
     }
     /// Reconstruct behaviors + rules + evidence for an entry function into the
-    /// summary's snapshot (v0.5). Returns the JSON DTO.
+    /// summary's snapshot (v0.5). Computes the summary first if needed. Returns
+    /// the JSON DTO.
     pub fn reconstruct_behaviors(
         &self,
         snapshot: &str,
@@ -430,6 +431,17 @@ impl Query {
     ) -> Result<Value> {
         let sid = self.snapshot(snapshot, repository)?;
         let (function, _) = self.function(snapshot, repository, entry)?;
+        let has_summary: bool = self
+            .db()
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM function_summaries WHERE function_id=?1 AND complete=1)",
+                [function],
+                |r| r.get(0),
+            )
+            .map_err(sql)?;
+        if !has_summary {
+            self.summarize_scalar(snapshot, repository, entry, &Default::default())?;
+        }
         behavior::reconstruct(self.db(), sid, function, limit, offset)
     }
     /// List functional rules for a snapshot, optionally with evidence (v0.5).
