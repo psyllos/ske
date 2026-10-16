@@ -749,3 +749,40 @@ Exécuté : `cargo test -p ske-solver` (12 tests PASS),
 Le formatage du nouveau test a été corrigé après fmt --check.
 Changements locaux non publiés ; CI distante et landing toujours en attente.
 
+## Correction de l'échec GitHub Actions — adaptateur Linux
+
+Demande : vérifier et corriger le workflow distant. Worktree repris propre
+sur `main` / `8004d2f`. Les logs des runs `38878648861` (main) et
+`38900342322` (ske/implementation, v0.4 distant) montrent le même échec
+Ubuntu : le test mémoire reçoit `E_RECORD_ORDER` plutôt que `E_ADAPTER_LIMIT`.
+
+Cause : EOF remonté avant vérification de la sortie non nulle de l'adaptateur
+(allocation refusée sous `prlimit` Linux). Correction dans le lanceur :
+après EOF, attendre le statut sous watchdog avant classification ; garder
+le rejet immédiat des autres erreurs de trame. Trois régressions ajoutées,
+dont une reproduite rouge avant le correctif.
+
+Validation macOS : fmt, Clippy strict, 33 tests ske-ingest, workspace
+`--locked` et `./scripts/verify.sh` PASS (`VERIFY OK v0.3`). Aucun test ignoré.
+Rapport : `docs/validation/ci-adapter-exit.md` ; logs locaux :
+`target/validation-ci/`. Linux corrigé et CI distante à confirmer après
+publication autorisée. Aucun push/merge, aucun changement v0.4 récupéré.
+
+### Confirmation CI et demande d'intégration
+
+Après autorisation explicite `/land`, correctif `d160ad3` publié sur
+`fix/adapter-eof-exit-status`. Run GitHub `38901608478` : **SUCCESS**,
+jobs Ubuntu et macOS verts, tests workspace locked et workflow de conformité
+complets inclus. Le défaut mémoire Linux est donc confirmé corrigé à distance.
+Intégration vers `main` engagée après ce résultat ; aucun changement de la
+branche distante `ske/implementation` (v0.4).
+
+## Landing repris — réconciliation avec main
+
+Demande explicite `/land`. Fusion de `origin/main` (`02df44f`) dans
+`ske/implementation`, sans réécriture d'historique. La règle EOF de `d160ad3`
+remplace le délai de grâce de `9106713` : une erreur hors EOF reste une erreur
+de protocole immédiate ; après EOF, la sortie du processus est attendue sous
+surveillance des limites existantes. Les régressions des deux branches sont
+conservées. Les deux sections concurrentes du journal sont conservées.
+Validation locale complète puis CI Linux/macOS requises avant avance de main.

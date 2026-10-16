@@ -146,6 +146,38 @@ fn adapter_limits_oversize_count_truncation_invalid_and_nonzero_exit() {
     }
 }
 #[test]
+fn adapter_limits_failed_child_exit_takes_precedence_over_incomplete_response() {
+    for bytes in [vec![], vec![0, 0], vec![0, 0, 0, 2, 255]] {
+        // Closing stdout before exiting makes EOF observable before try_wait
+        // can report failure. Linux allocation failures have the same ordering.
+        let child = ChildFixture::new(&bytes, "cat response\nexec 1>&-\nsleep 0.2\nexit 9");
+        let error = child.list(&limits()).unwrap_err();
+        assert_eq!(error.code, "E_ADAPTER_LIMIT");
+        assert!(error.message.contains("adapter exited"), "{error}");
+    }
+}
+#[test]
+fn adapter_limits_invalid_frame_does_not_wait_for_child_exit() {
+    let child = ChildFixture::new(&[0, 0, 0, 0], "cat response\nsleep 30");
+    let start = Instant::now();
+    assert_eq!(child.list(&limits()).unwrap_err().code, "E_PROTO_DECODE");
+    assert!(start.elapsed() < Duration::from_secs(2));
+}
+#[test]
+fn adapter_limits_eof_still_bounds_wait_for_child_exit() {
+    let child = ChildFixture::new(&[], "exec 1>&-\nsleep 30");
+    let start = Instant::now();
+    let error = child
+        .list(&RunLimits {
+            timeout_ms: 300,
+            ..limits()
+        })
+        .unwrap_err();
+    assert_eq!(error.code, "E_ADAPTER_LIMIT");
+    assert!(error.message.contains("monitoring limit"), "{error}");
+    assert!(start.elapsed() < Duration::from_secs(2));
+}
+#[test]
 fn adapter_limits_stderr_flood_drained_without_polluting_frames() {
     let child = ChildFixture::new(
         &frames(vec![done()]),
