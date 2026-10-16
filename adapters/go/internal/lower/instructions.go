@@ -2,6 +2,7 @@ package lower
 
 import (
 	"fmt"
+	"go/ast"
 	"go/token"
 	"go/types"
 	"reflect"
@@ -138,6 +139,21 @@ func (l *lowerer) instruction(i ssa.Instruction, bid string, n int) int {
 	case *ssa.Return:
 		d.Opcode = "RETURN"
 		d.IsTerminator = true
+		// SSA records the return keyword position, not the full result site.
+		// Preserve the complete source ReturnStmt for RESULT_SITE evidence.
+		if l.fn.Syntax() != nil {
+			ast.Inspect(l.fn.Syntax(), func(node ast.Node) bool {
+				if ret, ok := node.(*ast.ReturnStmt); ok && ret.Pos() == i.Pos() {
+					if p := l.span(ret.Pos()); p != nil {
+						end := l.fset.Position(ret.End())
+						p.EndLine, p.EndColumn = uint32(end.Line), uint32(end.Column)
+						d.Spans = []*cir.Span{p}
+					}
+					return false
+				}
+				return true
+			})
+		}
 	case *ssa.Panic:
 		d.Opcode = "PANIC"
 		d.IsTerminator = true

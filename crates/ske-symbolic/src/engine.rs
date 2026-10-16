@@ -241,6 +241,37 @@ fn bool_ty() -> Type {
         sort: Sort::Bool,
     }
 }
+
+// Implicit normal-execution checks do not add a duplicate record for a
+// predicate already carried by a source edge. Bool type provenance may differ;
+// operators and operand identities must be identical.
+fn same_boolean_predicate(arena: &ExprArena, a: ExprId, b: ExprId) -> bool {
+    let (Some(a), Some(b)) = (arena.get(a), arena.get(b)) else {
+        return false;
+    };
+    if a.ty.sort != Sort::Bool || b.ty.sort != Sort::Bool {
+        return false;
+    }
+    if a.kind == b.kind {
+        return true;
+    }
+    match (&a.kind, &b.kind) {
+        (
+            ExprKind::Unary {
+                op: UnaryOp::Not,
+                arg: a,
+            },
+            ExprKind::Unary {
+                op: UnaryOp::Not,
+                arg: b,
+            },
+        ) => arena
+            .get(*a)
+            .zip(arena.get(*b))
+            .is_some_and(|(a, b)| a.kind == b.kind),
+        _ => false,
+    }
+}
 fn binary(
     a: &mut ExprArena,
     op: BinaryOp,
@@ -1197,7 +1228,13 @@ pub fn analyze_with_summaries(
                     r.exit(&panic, ins, "PANIC")?;
                 }
                 let ng = not(&mut r.backend.arena, g)?;
-                Arc::make_mut(&mut s.constraints).push(ng);
+                if !s
+                    .constraints
+                    .iter()
+                    .any(|old| same_boolean_predicate(&r.backend.arena, *old, ng))
+                {
+                    Arc::make_mut(&mut s.constraints).push(ng);
+                }
                 let (_, check) = r.query(&s.constraints)?;
                 if matches!(check, CheckResult::Unsat) || !r.state_budget() {
                     continue;

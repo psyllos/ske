@@ -94,11 +94,12 @@ ne peuvent être éliminés pour obtenir artificiellement une preuve.
   le run ne change plus de statut ; les candidats non vérifiés deviennent
   UNKNOWN si une annulation interrompt la vérification.
 
-Comportements/réutilisation v0.5, Rust/Java v0.6 et
-API/MCP/LLM v0.7 restent hors livraison. Aucun code étudié arbitraire n'est
-exécuté ; seul le runner concret de confiance du dépôt est autorisé par les
-tests différentiels. Les commandes réellement exécutées sont dans les rapports
-de validation ; les obligations décrites dans un ADR ne sont pas des PASS.
+Les comportements/réutilisation v0.5 livrés ci-dessous le sont dans leur
+périmètre borné ; Rust/Java v0.6 et API/MCP/LLM v0.7 restent hors livraison.
+Aucun code étudié arbitraire n'est exécuté ; seul le runner concret de
+confiance du dépôt est autorisé par les tests différentiels. Les commandes
+réellement exécutées sont dans les rapports de validation ; les obligations
+décrites dans un ADR ne sont pas des PASS.
 
 ## Périmètre et frontières v0.4
 
@@ -145,17 +146,66 @@ Validation : `python3 scripts/validate-v04.py` exécute les 14 AC, incluant
 `summary_matches_concrete` et 200 exécutions CIR concrètes de Sum contre les
 intervalles. Les 96 AC précédents sont rejoués. CI distante non exécutée.
 
-## v0.5 — état intermédiaire, non validé
+## v0.5 — connaissance comportementale (validée)
 
-Les comportements, règles et evidence sont implémentés et ont des tests ciblés,
-mais ne constituent pas encore une livraison conforme de v0.5. Les points
-ouverts du dernier `docs/work-log.md` sont bloquants : canonicalisation et
-invalidation du cache, correspondances ambiguës entre unités, provenance des
-fusions, règles de rendu et hiérarchie scénario/capacité.
+v0.5 est validée : 13 AC PASS sur `python3 scripts/validate-v05.py`
+(`SKE_EXPECT_VERIFY_VERSION=v0.5`), avec non-régression des 110 AC antérieurs
+(42 v0.1 + 25 v0.2 + 29 v0.3 + 14 v0.4) rejoués par AC-0.5-12.
+Les logs et résultats sont conservés dans `target/validation-v0*/`.
 
-La copie de résumés a été renforcée après reproduction de références d'issues
-restées dans le snapshot source et d'une réhydratation sans paramètres.
-Les tests couvrent maintenant les références destination, les rendus A/B et
-l'application d'un callee réutilisé à un appelant nouvellement calculé.
-Ces tests ne certifient pas tous les cas d'effets, de récursion ou de build.
-Le jalon reste PARTIAL ; aucun résultat de la revue indépendante n'est présumé.
+Périmètre livré (spéc. §7.2, §7.5, §8.4, §11.2, §13) :
+
+- **Règles R1–R6** : gardes rendues en conjonction ordonnée par chemin ir,
+  sans simplification algébrique et sans assimilation par texte de contraintes
+  distinctes (une répétition reste affichée) ; négations poussées, constantes
+  décimales signées, paramètres/globales par nom, R6 parenthésé. Garde vide
+  rendue `true`. La double garde DIV implicite n'est pas dupliquée dans l'arène
+  (dédoublonnage structurel `same_boolean_predicate`), ce qui évite d'inventer
+  une contrainte tout en préservant R1 du côté rendu.
+- **Déduplication** : clé structurelle (exit_kind, résultat expr, mémoire,
+  effets), garde = disjonction des gardes des cas fusionnés, précision = la
+  plus faible, provenance de tous les cas fusionnés conservée
+  (`summary_case_ids`, evidence DERIVED_FROM/RESULT_SITE par cas). RETURN et
+  PANIC ne fusionnent jamais.
+- **Ordre des cas** : clé normative `(span, chemin ir numérique
+  (décision_ordinal, outcome_ordinal), fingerprint)` ; le fingerprint du cas
+  est structurel (gardes, retours, mémoire, effets, chemin ir), indépendant de
+  l'ordre d'exploration.
+- **Persistance** : behavior_scenarios/cases/outcomes, functional_rules,
+  knowledge_evidence, functional_capabilities, capability_scenarios,
+  scenario_links (frontière EXTERNAL_UNKNOWN pour les effets inconnus).
+  Reconstruction transactionnelle : tous les cas persistés avant pagination,
+  rollback en cas d'échec.
+- **CLI** : `ske behaviors reconstruct` (JSON/YAML, pagination), `ske rules
+  list --with-evidence`, `ske rules stale-check` (marque STALE sur disparition
+  ou changement d'empreinte structurelle §4.6, jamais ré-attribution).
+- **Réutilisation des résumés (§13)** : copie-sur-réutilisation entre
+  snapshots du même dépôt, clé = contexte + empreinte structurelle §4.6
+  (canonique, indépendante des ids de flux, des spans et des types
+  inutilisés) + empreinte sémantique + dépendances triées + modèles +
+  configuration (snapshot, budget, contexte, namespace moteur
+  `ske-summary-scalar-0.5-cache-v2`). Lignes `analysis_dependencies`
+  (FUNCTION/SUMMARY) inscrites ; metrics summaries_reused/computed et
+  reused_from_summary_id ; choix de précision conservé. Une réhydratation
+  incomplète est recalculée via savepoint (jamais de moitié copiée).
+
+Limites v0.5 (bornes assumées, non des défauts) :
+
+- **Réutilisation** : seulement pour des configurations de snapshot identiques
+  (build tags/goos/goarch compris, testé) et le mode moteur v0.5 ; un corps
+  différent sous la même config invalide le fingerprint (testé). Cas partiels
+  (`PARTIAL`, effets non modélisés) non réutilisés comme résumés complets.
+  Pas de graphe de dépendances multi-snapshot exploité au-delà de
+  `analysis_dependencies` (informatif, non cyclé).
+- **Scénario/capacité §7.5** : un scénario est un groupement technique par
+  snapshot+fonction ; l'origine est `DETERMINISTIC` et la validation
+  `UNVALIDATED` (aucune validation humaine ou LLM). Une frontière
+  `EXTERNAL_UNKNOWN` est déclarée quand des UNKNOWN_EFFECT existent ; elle ne
+  prétend pas fermer le comportement.
+- **Règles fonctionnelles** : dérivées de résumés ; `validation_status` reste
+  `UNVALIDATED` sauf marquage `STALE` après `stale-check`. Le stale-check ne
+  déduit rien sur les fonctions disparues (il les marque STALE, il ne les
+  ré-attribue pas).
+- **Evidence** : ancrage RESULT_SITE aux spans de sortie complets émis par
+  l'adaptateur Go de confiance ; l'adaptateur est le seul producteur de
+  spans. Aucun texte « métier » n'est inventé (`behavior_no_business_text`).

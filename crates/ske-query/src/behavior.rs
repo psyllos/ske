@@ -334,9 +334,9 @@ fn span_line_col(db: &Connection, span: i64) -> Result<Option<(u64, u64)>> {
 
 /// Map IR-outcome edge labels (already local) to the linked source outcomes
 /// (`example.Check/sd0/o0`), preserving the first-seen order.
-fn source_outcomes_for(db: &Connection, snapshot: i64, ir_labels: &[String]) -> Result<Vec<Value>> {
+fn source_outcomes_for(db: &Connection, snapshot: i64, ir_ids: &[i64]) -> Result<Vec<Value>> {
     let mut out = Vec::new();
-    for label in ir_labels {
+    for id in ir_ids {
         let rows = rows(
             db,
             "SELECT so.local_key AS so_key, sd.local_key AS sd_key FROM source_ir_links l
@@ -347,9 +347,8 @@ fn source_outcomes_for(db: &Connection, snapshot: i64, ir_labels: &[String]) -> 
              JOIN basic_blocks b ON b.id=e.source_block_id
              JOIN functions f ON f.id=b.function_id
              JOIN symbols s ON s.id=f.symbol_id
-             JOIN compilation_units u ON u.id=s.unit_id
-             WHERE e.local_key=u.unit_key||'|'||?1 AND s.snapshot_id=?2",
-            params![label, snapshot],
+             WHERE io.id=?1 AND s.snapshot_id=?2 ORDER BY sd.local_key,so.ordinal",
+            params![id, snapshot],
         )?;
         for row in rows {
             let so = local(&row["so_key"]).as_str().unwrap_or("").to_owned();
@@ -405,11 +404,19 @@ pub fn reconstruct(
         .map_err(sql)?;
     db.execute(
         "INSERT INTO analysis_runs(snapshot_id,entry_function_id,analysis_kind,engine_version,
-         config_fingerprint,assumptions_fingerprint,status) VALUES(?1,?2,'BEHAVIOR','ske-behavior-0.5',?3,?3,'RUNNING')",
-        params![snapshot, entry, "none"],
+         config_fingerprint,assumptions_fingerprint,status)
+         SELECT ?1,?2,'BEHAVIOR','ske-behavior-0.5',config_fingerprint,assumptions_fingerprint,'RUNNING'
+         FROM analysis_runs WHERE id=?3",
+        params![snapshot, entry, summary_run],
     )
     .map_err(sql)?;
     let run = db.last_insert_rowid();
+    db.execute(
+        "INSERT INTO analysis_assumptions(analysis_run_id,kind,description,payload)
+         SELECT ?1,kind,description,payload FROM analysis_assumptions WHERE analysis_run_id=?2",
+        params![run, summary_run],
+    )
+    .map_err(sql)?;
     db.execute(
         "INSERT INTO behavior_scenarios(analysis_run_id,entry_function_id,local_key,name,status,precision)
          VALUES(?1,?2,?3,?4,'COMPLETED',?5)",
@@ -421,7 +428,7 @@ pub fn reconstruct(
     let cases = rows(
         db,
         "SELECT id,case_ordinal,guard_json,exit_kind,precision,exit_span_id,memory_delta_json
-         FROM summary_cases WHERE summary_id=?1 ORDER BY case_ordinal",
+         FROM summary_cases WHERE summary_id=?1 AND exit_kind IN ('RETURN','PANIC','THROW') ORDER BY case_ordinal",
         [summary_id],
     )?;
     let mut names = function_names(db, entry)?;
@@ -446,16 +453,67 @@ pub fn reconstruct(
              FROM observable_effects WHERE summary_case_id=?1 ORDER BY effect_ordinal",
             [case["id"].as_i64().unwrap()],
         )?;
-        let outcomes: Vec<String> = rows(
+        let outcomes = rows(
             db,
-            "SELECT o.local_key AS ir_outcome FROM summary_case_outcomes sco
+            "WITH decisions AS (
+               SELECT d.id, ROW_NUMBER() OVER (PARTITION BY b.function_id ORDER BY b.ordinal,i.ordinal)-1 AS ordinal
+               FROM ir_decisions d JOIN instructions i ON i.id=d.terminator_instruction_id
+               JOIN basic_blocks b ON b.id=i.block_id)
+             SELECT io.id AS ir_outcome_id, io.ordinal AS outcome_ordinal, d.ordinal AS decision_ordinal
+             FROM summary_case_outcomes sco
              JOIN ir_outcomes io ON io.id=sco.ir_outcome_id
-             JOIN control_edges o ON o.id=io.control_edge_id WHERE sco.summary_case_id=?1 ORDER BY sco.path_ordinal",
+             JOIN decisions d ON d.id=io.decision_id WHERE sco.summary_case_id=?1 ORDER BY sco.path_ordinal",
             [case["id"].as_i64().unwrap()],
-        )?
-        .iter()
-        .map(|o| local(&o["ir_outcome"]).as_str().unwrap_or("").to_owned())
-        .collect();
+        )?;
+        let ir_path: Vec<(u64, u64)> = outcomes
+            .iter()
+            .map(|o| {
+                (
+                    o["decision_ordinal"].as_u64().unwrap(),
+                    o["outcome_ordinal"].as_u64().unwrap(),
+                )
+            })
+            .collect();
+        let outcome_ids = outcomes
+            .iter()
+            .map(|o| o["ir_outcome_id"].as_i64().unwrap())
+            .collect();
+        let mut memory: Value =
+            serde_json::from_str(case["memory_delta_json"].as_str().unwrap_or("[]"))
+                .map_err(|e| Error::new("E_DB_INTEGRITY", e.to_string()))?;
+        for delta in memory
+            .as_array_mut()
+            .ok_or_else(|| Error::new("E_DB_INTEGRITY", "memory delta must be an array"))?
+        {
+            let expression_id = delta["expression_id"]
+                .as_i64()
+                .ok_or_else(|| Error::new("E_DB_INTEGRITY", "missing delta expression"))?;
+            let hash: String = db.query_row(
+                "SELECT expression_hash FROM symbolic_expressions WHERE id=?1 AND snapshot_id=?2",
+                params![expression_id,snapshot], |r| r.get(0),
+            ).map_err(sql)?;
+            delta["expression_id"] = json!(hash);
+        }
+        let memory_delta = ske_common::canonical_json(&memory)?;
+        let guard_hashes: Vec<String> =
+            serde_json::from_str::<Vec<i64>>(case["guard_json"].as_str().unwrap_or("[]"))
+                .map_err(|e| Error::new("E_DB_INTEGRITY", e.to_string()))?
+                .into_iter()
+                .map(|id| {
+                    db.query_row(
+                "SELECT expression_hash FROM symbolic_expressions WHERE id=?1 AND snapshot_id=?2",
+                params![id,snapshot], |r| r.get(0),
+            ).map_err(sql)
+                })
+                .collect::<Result<_>>()?;
+        let fingerprint = ske_common::sha256_hex(ske_common::canonical_json(&json!([
+            exit_kind,
+            guard_hashes,
+            return_keys,
+            memory_delta,
+            effects,
+            ir_path
+        ]))?);
         let span = match span {
             Some(span) => span_line_col(db, span)?,
             None => None,
@@ -466,19 +524,13 @@ pub fn reconstruct(
             result: result.clone(),
             return_keys,
             span,
-            ir_path: outcomes.clone(),
-            memory_delta: case["memory_delta_json"]
-                .as_str()
-                .unwrap_or("[]")
-                .to_owned(),
+            ir_path,
+            outcome_ids,
+            memory_delta,
             effects: serde_json::to_string(&effects)
                 .map_err(|e| Error::new("E_INTERNAL", e.to_string()))?,
             precision: case["precision"].as_str().unwrap_or("UNKNOWN").to_owned(),
-            fingerprint: format!(
-                "{}@case{}",
-                qualified,
-                case["case_ordinal"].as_i64().unwrap()
-            ),
+            fingerprint,
             summary_case_id: Some(case["id"].as_i64().unwrap()),
         });
     }
@@ -516,7 +568,7 @@ pub fn reconstruct(
         }));
     }
     db.execute(
-        "UPDATE analysis_runs SET status='COMPLETED',finished_at=CURRENT_TIMESTAMP WHERE id=?1",
+        "UPDATE analysis_runs SET status='COMPLETED',exploration_closed=1,finished_at=CURRENT_TIMESTAMP WHERE id=?1",
         [run],
     )
     .map_err(sql)?;
@@ -525,10 +577,55 @@ pub fn reconstruct(
         "SELECT kind FROM analysis_assumptions WHERE analysis_run_id=?1 ORDER BY id",
         [summary_run],
     )?;
+    // §7.5: a mono-service scenario is an explicit technical grouping, never
+    // an automatically invented or human-validated business denomination.
+    let unit_key: String = db
+        .query_row(
+            "SELECT u.unit_key FROM functions f JOIN symbols s ON s.id=f.symbol_id
+         JOIN compilation_units u ON u.id=s.unit_id WHERE f.id=?1",
+            [entry],
+            |r| r.get(0),
+        )
+        .map_err(sql)?;
+    let capability_key = format!("function:{unit_key}|{qualified}");
+    db.execute(
+        "INSERT INTO functional_capabilities(snapshot_id,canonical_key,origin,validation_status)
+         VALUES(?1,?2,'DETERMINISTIC','UNVALIDATED') ON CONFLICT DO NOTHING",
+        params![snapshot, capability_key],
+    )
+    .map_err(sql)?;
+    let capability: i64 = db
+        .query_row(
+            "SELECT id FROM functional_capabilities WHERE snapshot_id=?1 AND canonical_key=?2",
+            params![snapshot, capability_key],
+            |r| r.get(0),
+        )
+        .map_err(sql)?;
+    db.execute(
+        "INSERT INTO capability_scenarios(capability_id,scenario_id) VALUES(?1,?2)",
+        params![capability, scenario],
+    )
+    .map_err(sql)?;
+    let unknown_effects = rows(db,
+        "SELECT e.effect_kind,e.target_descriptor,e.payload FROM observable_effects e
+         JOIN summary_cases c ON c.id=e.summary_case_id WHERE c.summary_id=?1 AND e.effect_kind='UNKNOWN_EFFECT'
+         ORDER BY c.case_ordinal,e.effect_ordinal",[summary_id])?;
+    if !unknown_effects.is_empty() {
+        db.execute(
+            "INSERT INTO scenario_links(from_scenario_id,relation_kind,confidence_kind,evidence_json,assumptions_json)
+             VALUES(?1,'EXTERNAL_UNKNOWN','UNKNOWN',?2,?3)",
+            params![scenario,serde_json::to_string(&unknown_effects).unwrap(),
+                serde_json::to_string(&assumptions).unwrap()],
+        ).map_err(sql)?;
+    }
     let response = json!({
         "function": qualified,
         "run_id": run,
         "precision": precision,
+        "scenario": {"id":scenario,"complete":unknown_effects.is_empty(),"external_boundary":
+            if unknown_effects.is_empty() { Value::Null } else { json!("EXTERNAL_UNKNOWN") }},
+        "capability": {"canonical_key":capability_key,"title":null,"origin":"DETERMINISTIC",
+            "validation_status":"UNVALIDATED"},
         "assumptions": json!(assumptions.iter().map(|a| a["kind"].clone()).collect::<Vec<_>>()),
         "cases": out_cases.into_iter().skip(offset).take(limit).collect::<Vec<_>>(),
         "page": super::page(limit, offset, total),
@@ -563,36 +660,28 @@ fn persist_case(
     )
     .map_err(sql)?;
     let case_id = db.last_insert_rowid();
-    for label in &behavior.referenced_outcomes {
-        let id: Option<i64> = db
-            .query_row(
-                "SELECT io.id FROM ir_outcomes io JOIN control_edges e ON e.id=io.control_edge_id
-                 JOIN basic_blocks b ON b.id=e.source_block_id
-                 JOIN functions f ON f.id=b.function_id JOIN symbols s ON s.id=f.symbol_id
-                 JOIN compilation_units u ON u.id=s.unit_id
-                 WHERE e.local_key=u.unit_key||'|'||?1 AND s.snapshot_id=?2",
-                params![label, snapshot],
-                |r| r.get(0),
-            )
-            .optional()
-            .map_err(sql)?;
-        if let Some(id) = id {
-            db.execute(
+    for id in &behavior.referenced_outcomes {
+        outcome_identity(db, snapshot, *id)?;
+        db.execute(
                 "INSERT OR IGNORE INTO behavior_case_outcomes(behavior_case_id,ir_outcome_id) VALUES(?1,?2)",
                 params![case_id, id],
             )
             .map_err(sql)?;
-        }
     }
     db.execute(
         "INSERT INTO functional_rules(snapshot_id,behavior_case_id,rule_key,short_name,description,origin,validation_status)
-         VALUES(?1,?2,?3,?4,?5,'DETERMINISTIC','UNVALIDATED')",
+         VALUES(?1,?2,?3,?4,?5,
+           CASE WHEN EXISTS(
+             SELECT 1 FROM behavior_scenarios bs JOIN analysis_assumptions a ON a.analysis_run_id=bs.analysis_run_id
+             WHERE bs.id=?6 AND a.kind='LOOP_INTERVAL_ABSTRACTION')
+           THEN 'ABSTRACT_DERIVED' ELSE 'DETERMINISTIC' END,'UNVALIDATED')",
         params![
             snapshot,
             case_id,
             rule_key,
             behavior.guard,
-            format!("WHEN {} THEN {result_text}", behavior.guard)
+            format!("WHEN {} THEN {result_text}", behavior.guard),
+            scenario
         ],
     )
     .map_err(sql)?;
@@ -605,7 +694,7 @@ fn persist_evidence(
     db: &Connection,
     snapshot: i64,
     case_id: i64,
-    summary_case_id: Option<i64>,
+    _summary_case_id: Option<i64>,
     behavior: &ske_behavior::BehaviorCaseRow,
 ) -> Result<Vec<Value>> {
     let rule_id: i64 = db
@@ -623,7 +712,7 @@ fn persist_evidence(
         )
         .map_err(sql)?;
     let mut evidence = Vec::new();
-    if let Some(sid) = summary_case_id {
+    for sid in &behavior.summary_case_ids {
         db.execute(
             "INSERT INTO knowledge_evidence(functional_rule_id,summary_case_id,relation) VALUES(?1,?2,'DERIVED_FROM')",
             params![rule_id, sid],
@@ -631,42 +720,19 @@ fn persist_evidence(
         .map_err(sql)?;
         evidence.push(json!({"kind":"summary_case","id":rule_key,"relation":"DERIVED_FROM"}));
     }
-    for label in &behavior.referenced_outcomes {
-        let ir_id: Option<i64> = db
-            .query_row(
-                "SELECT io.id FROM ir_outcomes io JOIN control_edges e ON e.id=io.control_edge_id
-                 JOIN basic_blocks b ON b.id=e.source_block_id
-                 JOIN functions f ON f.id=b.function_id JOIN symbols s ON s.id=f.symbol_id
-                 JOIN compilation_units u ON u.id=s.unit_id
-                 WHERE e.local_key=u.unit_key||'|'||?1 AND s.snapshot_id=?2",
-                params![label, snapshot],
-                |r| r.get(0),
-            )
-            .optional()
-            .map_err(sql)?;
-        let Some(ir_id) = ir_id else { continue };
+    for ir_id in &behavior.referenced_outcomes {
+        let (label, unit_key) = outcome_identity(db, snapshot, *ir_id)?;
         db.execute(
             "INSERT INTO knowledge_evidence(functional_rule_id,ir_outcome_id,relation) VALUES(?1,?2,'GUARD_OUTCOME')",
             params![rule_id, ir_id],
         )
         .map_err(sql)?;
-        let unit_key: String = db
-            .query_row(
-                "SELECT u.unit_key FROM ir_outcomes io JOIN ir_decisions d ON d.id=io.decision_id
-                 JOIN instructions i ON i.id=d.terminator_instruction_id
-                 JOIN basic_blocks b ON b.id=i.block_id
-                 JOIN functions f ON f.id=b.function_id
-                 JOIN symbols s ON s.id=f.symbol_id
-                 JOIN compilation_units u ON u.id=s.unit_id WHERE io.id=?1",
-                [ir_id],
-                |r| r.get(0),
-            )
-            .map_err(sql)?;
         evidence.push(
             json!({"kind":"ir_outcome","id":label,"unit_key":unit_key,"relation":"GUARD_OUTCOME"}),
         );
     }
-    if let Some(sid) = summary_case_id {
+    let mut seen_spans = std::collections::BTreeSet::new();
+    for sid in &behavior.summary_case_ids {
         let span: Option<i64> = db
             .query_row(
                 "SELECT exit_span_id FROM summary_cases WHERE id=?1",
@@ -676,6 +742,9 @@ fn persist_evidence(
             .optional()
             .map_err(sql)?;
         if let Some(span_id) = span {
+            if !seen_spans.insert(span_id) {
+                continue;
+            }
             db.execute(
                 "INSERT INTO knowledge_evidence(functional_rule_id,source_span_id,relation) VALUES(?1,?2,'RESULT_SITE')",
                 params![rule_id, span_id],
@@ -686,6 +755,21 @@ fn persist_evidence(
         }
     }
     Ok(evidence)
+}
+
+fn outcome_identity(db: &Connection, snapshot: i64, id: i64) -> Result<(String, String)> {
+    let (stored,unit): (String,String) = db.query_row(
+        "SELECT e.local_key,u.unit_key FROM ir_outcomes io JOIN control_edges e ON e.id=io.control_edge_id
+         JOIN basic_blocks b ON b.id=e.source_block_id JOIN functions f ON f.id=b.function_id
+         JOIN symbols s ON s.id=f.symbol_id JOIN compilation_units u ON u.id=s.unit_id
+         WHERE io.id=?1 AND s.snapshot_id=?2", params![id,snapshot],
+        |r| Ok((r.get(0)?,r.get(1)?)),
+    ).map_err(sql)?;
+    let label = stored
+        .strip_prefix(&format!("{unit}|"))
+        .ok_or_else(|| Error::new("E_DB_INTEGRITY", "outcome outside unit"))?
+        .to_owned();
+    Ok((label, unit))
 }
 
 /// List functional rules for a snapshot, optionally with evidence (§11.2).
@@ -728,27 +812,25 @@ pub fn list_rules(
                  WHERE ke.functional_rule_id=?1 ORDER BY ke.id",
                 [rule_id],
             )?;
-            item["evidence"] = json!(evidence
-                .iter()
-                .map(|e| {
-                    let mut v = e.clone();
-                    v.as_object_mut().unwrap().remove("span");
-                    if !e["span"].as_str().unwrap_or("").is_empty() {
-                        v["kind"] = json!("source_span");
-                        v["span"] = e["span"].clone();
-                    } else if e["ir_outcome_id"].is_i64() {
-                        v["kind"] = json!("ir_outcome");
-                        v["id"] = json!(e["ir_outcome_id"]);
-                        v.as_object_mut().unwrap().remove("ir_outcome_id");
-                    } else if e["summary_case_id"].is_i64() {
-                        v["kind"] = json!("summary_case");
-                        v["id"] = json!(e["summary_case_id"]);
-                        v.as_object_mut().unwrap().remove("summary_case_id");
-                    }
-                    v.as_object_mut().unwrap().remove("source_span_id");
-                    v
-                })
-                .collect::<Vec<_>>());
+            let mut anchors = Vec::new();
+            for e in evidence {
+                let relation = e["relation"].clone();
+                if let Some(id) = e["ir_outcome_id"].as_i64() {
+                    let (label, unit) = outcome_identity(db, snapshot, id)?;
+                    anchors.push(
+                        json!({"kind":"ir_outcome","id":label,"unit_key":unit,"relation":relation}),
+                    );
+                } else if let Some(id) = e["summary_case_id"].as_i64() {
+                    anchors.push(json!({"kind":"summary_case","id":rule["rule_key"],
+                        "summary_case_id":id,"relation":relation}));
+                } else if e["source_span_id"].is_i64() {
+                    anchors
+                        .push(json!({"kind":"source_span","span":e["span"],"relation":relation}));
+                } else {
+                    return Err(Error::new("E_DB_INTEGRITY", "unsupported evidence anchor"));
+                }
+            }
+            item["evidence"] = json!(anchors);
         }
         out.push(item);
     }
@@ -759,6 +841,8 @@ pub fn list_rules(
 /// function vanished from B or whose `structural_fingerprint` changed become
 /// `STALE` (never re-attributed to B). `from`/`to` are snapshot ids or `latest`.
 pub fn stale_check(db: &Connection, repository: &str, from: &str, to: &str) -> Result<Value> {
+    let tx = db.unchecked_transaction().map_err(sql)?;
+    let db: &Connection = &tx;
     let repo: i64 = db
         .query_row(
             "SELECT id FROM repositories WHERE name=?1",
@@ -789,19 +873,24 @@ pub fn stale_check(db: &Connection, repository: &str, from: &str, to: &str) -> R
         // Stale if the function vanished from B, or its structural fingerprint
         // changed. Match the function in B by qualified_name within its unit,
         // then compare §4.6 structural fingerprints (canonical body hash).
-        let b_function: Option<i64> = db
-            .query_row(
-                "SELECT f2.id FROM functions f2
+        let matches = rows(
+            db,
+            "SELECT f2.id FROM functions f2
                  JOIN symbols s2 ON s2.id=f2.symbol_id
                  JOIN symbols s1 ON s1.id=?1
+                 JOIN compilation_units u1 ON u1.id=s1.unit_id
                  JOIN compilation_units u2 ON u2.id=s2.unit_id
                  WHERE u2.snapshot_id=?2 AND s2.qualified_name=s1.qualified_name
-                   AND s2.unit_id IN (SELECT id FROM compilation_units WHERE snapshot_id=?2)",
-                params![symbol_id, to_snapshot],
-                |r| r.get(0),
-            )
-            .optional()
-            .map_err(sql)?;
+                   AND u2.unit_key=u1.unit_key AND f2.is_external=0",
+            params![symbol_id, to_snapshot],
+        )?;
+        if matches.len() > 1 {
+            return Err(Error::new(
+                "E_AMBIGUOUS",
+                "multiple target functions in corresponding unit",
+            ));
+        }
+        let b_function = matches.first().and_then(|v| v["id"].as_i64());
         let mut changed = false;
         if let Some(b_function) = b_function {
             let a = super::analysis_load::load(db, a_function).ok();
@@ -815,7 +904,7 @@ pub fn stale_check(db: &Connection, repository: &str, from: &str, to: &str) -> R
         }
         if b_function.is_none() || changed {
             db.execute(
-                "UPDATE functional_rules SET validation_status='STALE' WHERE id=?1 AND validation_status='UNVALIDATED'",
+                "UPDATE functional_rules SET validation_status='STALE' WHERE id=?1 AND validation_status<>'STALE'",
                 [rule_id],
             )
             .map_err(sql)?;
@@ -824,13 +913,15 @@ pub fn stale_check(db: &Connection, repository: &str, from: &str, to: &str) -> R
             unchanged += 1;
         }
     }
-    Ok(json!({
+    let response = json!({
         "repository": repository,
         "from": from_snapshot,
         "to": to_snapshot,
         "rules_marked_stale": stale,
         "rules_unchanged": unchanged,
-    }))
+    });
+    tx.commit().map_err(sql)?;
+    Ok(response)
 }
 
 /// Resolve a snapshot selector (integer id or `latest`) within a repository.

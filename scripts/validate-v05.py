@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "target/validation-v05"
@@ -13,11 +14,17 @@ ENV = dict(os.environ, PATH=f"{ROOT / 'target/debug'}:{os.environ['PATH']}")
 
 
 def execute(command):
-    result = subprocess.run(["bash", "-o", "pipefail", "-c", command],
-                            cwd=ROOT, env=ENV, text=True, capture_output=True)
-    text = result.stdout + result.stderr
-    if result.returncode:
-        raise AssertionError(f"exit {result.returncode}\n{text}")
+    process = subprocess.Popen(["bash", "-o", "pipefail", "-c", command],
+                               cwd=ROOT, env=ENV, text=True,
+                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    chunks = []
+    for line in process.stdout:
+        chunks.append(line)
+        print(line, end="", flush=True)
+    text = "".join(chunks)
+    code = process.wait()
+    if code:
+        raise AssertionError(f"exit {code}\n{text}")
     return text
 
 
@@ -61,8 +68,9 @@ def main():
     check(1, "cargo test -p ske-behavior",
           ["render_guard_r1_conjunction_in_path_order", "render_guard_r2_negation_push_and_bare_bool",
            "render_guard_decide_negations_and_signed_constants", "render_guard_r6_adjusted_infix_without_simplification",
-           "render_guard_r1_dedup_identical_atoms_divmod", "render_r4_fallbacks_and_globals", "render_r3_signed_and_unsigned_constants",
-           "behavior_case_ordering_by_span_then_ir_path", "behavior_case_dedup_conservative", "rule_description_returns_and_panic"])
+           "render_guard_r1_preserves_repeated_atoms", "render_r4_fallbacks_and_globals", "render_r3_signed_and_unsigned_constants",
+           "behavior_case_ordering_by_span_then_ir_path", "behavior_case_dedup_conservative",
+           "render_guard_r5_logical_grouping_and_r2_all_comparisons", "rule_description_returns_and_panic"])
     check(2, "cargo test -p ske-cli --test behavior behavior_check_exact_reference",
           ["behavior_check_exact_reference"])
     check(3, "cargo test -p ske-cli --test behavior behavior_check_rules_and_evidence_11",
@@ -71,7 +79,8 @@ def main():
           ["behavior_decide_no_unreachable_return"], build_adapter)
     check(5, "cargo test -p ske-cli --test behavior behavior_adjusted_no_simplification && cargo test -p ske-cli --test behavior behavior_entry_reference && cargo test -p ske-cli --test behavior behavior_divmod_reference",
           ["behavior_adjusted_no_simplification", "behavior_entry_reference", "behavior_divmod_reference"])
-    check(6, "cargo test -p ske-behavior behavior_case_dedup_conservative", ["behavior_case_dedup_conservative"])
+    check(6, "cargo test -p ske-behavior behavior_case_dedup_conservative && cargo test -p ske-cli --test behavior behavior_dedup",
+          ["behavior_case_dedup_conservative","behavior_dedup_retains_every_summary_and_result_site"])
     check(7, "cargo test -p ske-cli --test behavior behavior_unknown_effect_memopaque_overapprox",
           ["behavior_unknown_effect_memopaque_overapprox"])
     check(8, "cargo test -p ske-cli --test behavior behavior_no_business_text", ["behavior_no_business_text"])

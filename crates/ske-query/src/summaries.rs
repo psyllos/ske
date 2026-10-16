@@ -19,33 +19,175 @@ fn engine_error(message: String) -> Error {
     Error::new("E_INTERNAL", message)
 }
 
-/// Legacy v0.4 serialization hash, also used by stale-check. Full §4.6
-/// canonicalization independent of flow IDs remains to be audited for v0.5.
+/// §4.6 identity: canonical function body, independent of flow IDs and spans.
 pub(crate) fn structural(program: &Program) -> String {
-    // Length-delimited protobuf records avoid ambiguous concatenation. Map
-    // iteration is ordered, independent of SQLite IDs and extraction order.
+    let type_key = |id: &str| -> String {
+        let Some(ty) = program.types.get(id) else {
+            return String::new();
+        };
+        // Descriptors are language semantic identities, not producer flow IDs.
+        let descriptor = |id: &String| {
+            program
+                .types
+                .get(id)
+                .map(|t| t.canonical_descriptor.clone())
+                .unwrap_or_default()
+        };
+        sha256_hex(
+            ske_common::canonical_json(&json!([
+                ty.kind,
+                ty.canonical_descriptor,
+                ty.bit_width,
+                ty.is_signed,
+                ty.param_type_ids.iter().map(descriptor).collect::<Vec<_>>(),
+                ty.result_type_ids
+                    .iter()
+                    .map(descriptor)
+                    .collect::<Vec<_>>(),
+                ty.component_names,
+                ty.nullable,
+                ty.extra
+            ]))
+            .expect("serializable type"),
+        )
+    };
+    let mut block_keys = BTreeMap::new();
+    let mut instruction_keys = BTreeMap::new();
+    let mut value_keys = BTreeMap::new();
+    let mut blocks: Vec<_> = program.blocks.iter().collect();
+    blocks.sort_by_key(|(_, b)| b.ordinal);
+    for (id, block) in &blocks {
+        block_keys.insert((*id).clone(), format!("b{}", block.ordinal));
+        for i in &block.instructions {
+            let key = format!("b{}/i{}", block.ordinal, i.ordinal);
+            instruction_keys.insert(i.id.clone(), key.clone());
+            if !i.result_value_id.is_empty() {
+                value_keys.insert(i.result_value_id.clone(), format!("{key}/result"));
+            }
+        }
+    }
+    for (id, value) in &program.values {
+        if value_keys.contains_key(id) {
+            continue;
+        }
+        let key = if value.role == "PARAM" {
+            format!("param:{}", value.param_index.unwrap_or(0))
+        } else {
+            let literal = value.literal.as_ref().map(Message::encode_to_vec);
+            let symbol = program
+                .symbols
+                .get(&value.symbol_id)
+                .cloned()
+                .unwrap_or_default();
+            sha256_hex(
+                ske_common::canonical_json(&json!([
+                    value.role,
+                    type_key(&value.type_id),
+                    literal,
+                    symbol
+                ]))
+                .expect("serializable value"),
+            )
+        };
+        value_keys.insert(id.clone(), key);
+    }
+    let mapped =
+        |map: &BTreeMap<String, String>, id: &str| map.get(id).cloned().unwrap_or_default();
     let mut bytes = Vec::new();
-    program
-        .function
+    let mut function = program.function.clone();
+    function.id = "self".into();
+    function.symbol_id = "self".into();
+    function.entry_block_id = mapped(&block_keys, &function.entry_block_id);
+    function.parameter_value_ids = function
+        .parameter_value_ids
+        .iter()
+        .map(|v| mapped(&value_keys, v))
+        .collect();
+    function.return_type_ids = function
+        .return_type_ids
+        .iter()
+        .map(|t| type_key(t))
+        .collect();
+    function
         .encode_length_delimited(&mut bytes)
         .expect("Vec write");
-    for ty in program.types.values() {
-        ty.encode_length_delimited(&mut bytes).expect("Vec write");
-    }
-    for value in program.values.values() {
-        value
-            .encode_length_delimited(&mut bytes)
-            .expect("Vec write");
-    }
-    for block in program.blocks.values() {
+    let mut used = std::collections::BTreeSet::new();
+    used.extend(program.function.parameter_value_ids.iter().cloned());
+    for (_, block) in blocks {
         for ins in &block.instructions {
+            used.extend(ins.operand_value_ids.iter().cloned());
+            if !ins.result_value_id.is_empty() {
+                used.insert(ins.result_value_id.clone());
+            }
+            let mut ins = ins.clone();
+            ins.id = mapped(&instruction_keys, &ins.id);
+            ins.block_id = mapped(&block_keys, &ins.block_id);
+            ins.result_value_id = mapped(&value_keys, &ins.result_value_id);
+            ins.operand_value_ids = ins
+                .operand_value_ids
+                .iter()
+                .map(|v| mapped(&value_keys, v))
+                .collect();
+            ins.spans.clear();
+            if let Some(payload) = &mut ins.payload {
+                for phi in &mut payload.phi_inputs {
+                    used.insert(phi.value_id.clone());
+                    phi.value_id = mapped(&value_keys, &phi.value_id);
+                    phi.predecessor_block_id = mapped(&block_keys, &phi.predecessor_block_id);
+                }
+                if let Some(ske_cir::proto::operation_payload::Details::TypeTest(t)) =
+                    &mut payload.details
+                {
+                    t.target_type_id = type_key(&t.target_type_id);
+                }
+            }
             ins.encode_length_delimited(&mut bytes).expect("Vec write");
         }
-        for edge in &block.edges {
-            edge.definition
-                .encode_length_delimited(&mut bytes)
-                .expect("Vec write");
+        let mut edges: Vec<_> = block.edges.iter().collect();
+        edges.sort_by_key(|e| e.definition.outcome_ordinal);
+        for edge in edges {
+            let mut e = edge.definition.clone();
+            if !e.guard_value_id.is_empty() {
+                used.insert(e.guard_value_id.clone());
+            }
+            used.extend(e.case_value_ids.iter().cloned());
+            e.id = format!("b{}/e{}", block.ordinal, e.outcome_ordinal);
+            e.source_block_id = mapped(&block_keys, &e.source_block_id);
+            e.target_block_id = mapped(&block_keys, &e.target_block_id);
+            e.terminator_instruction_id = mapped(&instruction_keys, &e.terminator_instruction_id);
+            e.guard_value_id = mapped(&value_keys, &e.guard_value_id);
+            e.case_value_ids = e
+                .case_value_ids
+                .iter()
+                .map(|v| mapped(&value_keys, v))
+                .collect();
+            e.exception_filter_type_id = type_key(&e.exception_filter_type_id);
+            e.encode_length_delimited(&mut bytes).expect("Vec write");
         }
+    }
+    let mut values: Vec<_> = used
+        .iter()
+        .filter_map(|id| program.values.get(id))
+        .map(|v| {
+            let mut v = v.clone();
+            v.id = mapped(&value_keys, &v.id);
+            if !v.function_id.is_empty() {
+                v.function_id = "self".into();
+            }
+            v.type_id = type_key(&v.type_id);
+            v.symbol_id = program
+                .symbols
+                .get(&v.symbol_id)
+                .cloned()
+                .unwrap_or_default();
+            v.name.clear();
+            v
+        })
+        .collect();
+    values.sort_by(|a, b| a.id.cmp(&b.id));
+    values.dedup();
+    for v in values {
+        v.encode_length_delimited(&mut bytes).expect("Vec write");
     }
     sha256_hex(bytes)
 }
@@ -165,8 +307,10 @@ impl Calculation<'_> {
             )
             .map_err(sql)?;
         let context = sha256_hex("{}");
+        let structure = structural(&program);
+        let dependencies = fingerprints.clone();
         let fingerprint = ske_summary::CacheKey {
-            structural: &structural(&program),
+            structural: &structure,
             semantic_profile: &semantic,
             context: &context,
             callees: fingerprints,
@@ -174,6 +318,15 @@ impl Calculation<'_> {
             config: self.config,
         }
         .fingerprint()?;
+        for (kind, key) in std::iter::once(("FUNCTION", structure.as_str()))
+            .chain(dependencies.iter().map(|k| ("SUMMARY", k.as_str())))
+        {
+            self.db.execute(
+                "INSERT OR IGNORE INTO analysis_dependencies(snapshot_id,dependent_kind,dependent_key,dependency_kind,dependency_key)
+                 VALUES(?1,'SUMMARY',?2,?3,?4)",
+                params![self.snapshot,fingerprint,kind,key],
+            ).map_err(sql)?;
+        }
         if let Some((summary, summary_id)) = self.try_reuse(function, &context, &fingerprint)? {
             self.reused += 1;
             return Ok((summary, fingerprint, summary_id));
@@ -337,10 +490,17 @@ impl Calculation<'_> {
             .db
             .query_row(
                 "SELECT fs.id, ar.snapshot_id FROM function_summaries fs
+             JOIN functions sf ON sf.id=fs.function_id
+             JOIN symbols ss ON ss.id=sf.symbol_id
+             JOIN compilation_units su ON su.id=ss.unit_id
+             JOIN functions tf ON tf.id=?5
+             JOIN symbols ts ON ts.id=tf.symbol_id
+             JOIN compilation_units tu ON tu.id=ts.unit_id
              JOIN analysis_runs ar ON ar.id=fs.produced_by_run_id
              JOIN snapshots s ON s.id=ar.snapshot_id
              JOIN repositories r ON r.id=s.repository_id
              WHERE fs.context_fingerprint=?1 AND fs.summary_fingerprint=?2 AND fs.complete=1
+               AND ss.qualified_name=ts.qualified_name AND su.unit_key=tu.unit_key
                AND ar.snapshot_id IN (
                  SELECT s2.id FROM snapshots s2
                  JOIN repositories r2 ON r2.id=s2.repository_id
@@ -352,7 +512,7 @@ impl Calculation<'_> {
                AND ar.snapshot_id<>?4
              ORDER BY CASE WHEN fs.reused_from_summary_id IS NULL THEN 0 ELSE 1 END,
                       ar.snapshot_id, fs.id LIMIT 1",
-                params![context, fingerprint, self.run, self.snapshot],
+                params![context, fingerprint, self.run, self.snapshot, function],
                 |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
             )
             .optional()
@@ -360,14 +520,49 @@ impl Calculation<'_> {
         let Some((source_id, source_snapshot)) = source else {
             return Ok(None);
         };
-        let result = copy_summary_rows(
+        let source_function: i64 = self
+            .db
+            .query_row(
+                "SELECT function_id FROM function_summaries WHERE id=?1",
+                [source_id],
+                |r| r.get(0),
+            )
+            .map_err(sql)?;
+        if analysis_load::load(self.db, source_function)?.function.id
+            != analysis_load::load(self.db, function)?.function.id
+        {
+            return Ok(None);
+        }
+        self.db
+            .execute_batch("SAVEPOINT summary_reuse")
+            .map_err(sql)?;
+        let copied = copy_summary_rows(
             self.db,
             self.snapshot,
             self.run,
             function,
             source_id,
             source_snapshot,
-        )?;
+        );
+        let result = match copied {
+            Ok(result) => {
+                self.db
+                    .execute_batch("RELEASE summary_reuse")
+                    .map_err(sql)?;
+                result
+            }
+            Err(error) => {
+                self.db
+                    .execute_batch("ROLLBACK TO summary_reuse; RELEASE summary_reuse")
+                    .map_err(sql)?;
+                if matches!(error.code.as_str(), "E_DB_INTEGRITY" | "E_INTERNAL") {
+                    // Missing/ambiguous correspondence or non-rehydratable
+                    // persisted data: recompute; never guess or leave a half copy.
+                    return Ok(None);
+                }
+                return Err(error);
+            }
+        };
         // Mirror compute()'s recursion bookkeeping before the early return.
         let recursion = self
             .active
@@ -402,12 +597,12 @@ pub fn run(db: &Connection, snapshot: i64, entry: i64, budget: &Budget) -> Resul
             |r| r.get(0),
         )
         .map_err(sql)?;
+    let context = sha256_hex("{}");
     let config = sha256_hex(format!(
-        "{snapshot_config}|{budget_json}|ske-summary-scalar-0.5|{}|{}",
+        "{snapshot_config}|{budget_json}|{context}|ske-summary-scalar-0.5-cache-v2|{}|{}",
         solver.name(),
         solver.version()
     ));
-    let context = sha256_hex("{}");
     tx.execute(
         "INSERT INTO analysis_runs(snapshot_id,entry_function_id,analysis_kind,engine_version,
          solver_name,solver_version,config_fingerprint,assumptions_fingerprint,budget_json,status)
@@ -1131,6 +1326,93 @@ fn build_summary_node(
 #[cfg(test)]
 mod persisted_expression_tests {
     use super::*;
+
+    fn body(prefix: &str) -> Program {
+        use ske_cir::proto::{FunctionDef, InstructionDef, TypeDef, ValueDef};
+        use ske_symbolic::program::Block;
+        let id = |s: &str| format!("{prefix}:{s}");
+        Program {
+            function: FunctionDef {
+                id: id("f"),
+                symbol_id: id("f"),
+                entry_block_id: id("b"),
+                parameter_value_ids: vec![id("p")],
+                return_type_ids: vec![id("t")],
+                ..Default::default()
+            },
+            types: BTreeMap::from([(
+                id("t"),
+                TypeDef {
+                    id: id("t"),
+                    kind: "BITVECTOR".into(),
+                    canonical_descriptor: "int64".into(),
+                    bit_width: 64,
+                    is_signed: true,
+                    ..Default::default()
+                },
+            )]),
+            values: BTreeMap::from([(
+                id("p"),
+                ValueDef {
+                    id: id("p"),
+                    function_id: id("f"),
+                    type_id: id("t"),
+                    role: "PARAM".into(),
+                    name: "input".into(),
+                    param_index: Some(0),
+                    ..Default::default()
+                },
+            )]),
+            blocks: BTreeMap::from([(
+                id("b"),
+                Block {
+                    ordinal: 0,
+                    edges: vec![],
+                    instructions: vec![InstructionDef {
+                        id: id("i"),
+                        block_id: id("b"),
+                        ordinal: 0,
+                        opcode: "RETURN".into(),
+                        operand_value_ids: vec![id("p")],
+                        is_terminator: true,
+                        ..Default::default()
+                    }],
+                },
+            )]),
+            symbols: BTreeMap::from([(id("f"), "example.f".into())]),
+        }
+    }
+
+    #[test]
+    fn structural_fingerprint_ignores_flow_ids_spans_and_unused_types() {
+        let a = body("old-ids");
+        let mut b = body("renamed-ids");
+        b.blocks.values_mut().next().unwrap().instructions[0]
+            .spans
+            .push(ske_cir::proto::Span {
+                path: "moved.go".into(),
+                start_line: 99,
+                start_column: 1,
+                end_line: 99,
+                end_column: 10,
+            });
+        b.types.insert(
+            "unused".into(),
+            ske_cir::proto::TypeDef {
+                id: "unused".into(),
+                kind: "BOOL".into(),
+                canonical_descriptor: "bool".into(),
+                ..Default::default()
+            },
+        );
+        assert_eq!(structural(&a), structural(&b));
+        b.types.get_mut("renamed-ids:t").unwrap().is_signed = false;
+        assert_ne!(
+            structural(&a),
+            structural(&b),
+            "semantic type changes must invalidate"
+        );
+    }
 
     #[test]
     fn reused_field_hydration_preserves_nonzero_index() {

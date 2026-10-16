@@ -17,10 +17,10 @@ pub struct BehaviorCaseRowInput {
     pub return_keys: Vec<String>,
     /// (line, col) of the primary exit span, if any.
     pub span: Option<(u64, u64)>,
-    /// Ordered IR-outcome path labels, e.g. `["0/1", "1/0"]` — decision
-    /// ordinal within the function then outcome ordinal, as produced by the
-    /// caller from `summary_case_outcomes`.
-    pub ir_path: Vec<String>,
+    /// Ordered numeric (decision ordinal, outcome ordinal) pairs.
+    pub ir_path: Vec<(u64, u64)>,
+    /// Persistence identities, never reconstructed from display labels.
+    pub outcome_ids: Vec<i64>,
     /// Memory delta text (structural, for dedup).
     pub memory_delta: String,
     /// Effects text (structural, for dedup).
@@ -40,20 +40,23 @@ pub struct BehaviorCaseRow {
     pub exit_kind: String,
     pub result: String,
     pub span: Option<(u64, u64)>,
-    pub ir_path: Vec<String>,
+    pub ir_path: Vec<(u64, u64)>,
     pub memory_delta: String,
     pub effects: String,
     pub precision: String,
     pub fingerprint: String,
     /// Union of referenced IR-outcome path labels after dedup.
-    pub referenced_outcomes: Vec<String>,
+    pub referenced_outcomes: Vec<i64>,
     /// Origin summary case id (first source; kept for DERIVED_FROM evidence).
     pub summary_case_id: Option<i64>,
+    pub summary_case_ids: Vec<i64>,
 }
 
 /// §7.2 step 4 ordering comparator key: `(span, ir_path, fingerprint)`, where
 /// cases without a span sort last. Returns an ordering vector usable by `sort`.
-pub fn order_key(row: &BehaviorCaseRow) -> (Option<(u64, u64)>, Vec<String>, String) {
+pub type CaseOrderKey = (Option<(u64, u64)>, Vec<(u64, u64)>, String);
+
+pub fn order_key(row: &BehaviorCaseRow) -> CaseOrderKey {
     (row.span, row.ir_path.clone(), row.fingerprint.clone())
 }
 
@@ -81,7 +84,15 @@ pub fn order_cases(mut rows: Vec<BehaviorCaseRow>) -> Vec<BehaviorCaseRow> {
 /// `memory_delta`, same `effects`; a RETURN never merges with a PANIC. The
 /// merged guard is the disjunction of the two guards rendered with ` OR `,
 /// referenced outcomes = union.
-pub fn dedup_cases(rows: Vec<BehaviorCaseRowInput>) -> Vec<BehaviorCaseRow> {
+pub fn dedup_cases(mut rows: Vec<BehaviorCaseRowInput>) -> Vec<BehaviorCaseRow> {
+    rows.sort_by(|a, b| {
+        a.span
+            .is_none()
+            .cmp(&b.span.is_none())
+            .then_with(|| a.span.cmp(&b.span))
+            .then_with(|| a.ir_path.cmp(&b.ir_path))
+            .then_with(|| a.fingerprint.cmp(&b.fingerprint))
+    });
     let mut merged: Vec<BehavGroup> = Vec::new();
     for input in rows {
         let candidate = BehavGroup::from(input);
@@ -118,20 +129,24 @@ struct BehavGroup {
     result: String,
     return_keys: Vec<String>,
     span: Option<(u64, u64)>,
-    ir_path: Vec<String>,
+    ir_path: Vec<(u64, u64)>,
     memory_delta: String,
     effects: String,
     precision: String,
     fingerprint: String,
-    referenced_outcomes: std::collections::BTreeSet<String>,
+    referenced_outcomes: std::collections::BTreeSet<i64>,
     summary_case_id: Option<i64>,
+    summary_case_ids: std::collections::BTreeSet<i64>,
+    guards: Vec<String>,
 }
 
 impl BehavGroup {
     fn from(input: BehaviorCaseRowInput) -> Self {
         let mut referenced_outcomes = std::collections::BTreeSet::new();
-        referenced_outcomes.extend(input.ir_path.iter().cloned());
+        referenced_outcomes.extend(input.outcome_ids.iter().copied());
+        let summary_case_ids = input.summary_case_id.into_iter().collect();
         Self {
+            guards: vec![input.guard.clone()],
             guard: input.guard,
             exit_kind: input.exit_kind,
             result: input.result,
@@ -144,15 +159,21 @@ impl BehavGroup {
             fingerprint: input.fingerprint,
             referenced_outcomes,
             summary_case_id: input.summary_case_id,
+            summary_case_ids,
         }
     }
     fn merge(&mut self, other: BehavGroup) {
         // Guard = disjunction; keep the R1 order and parenthesize each side if
         // it contains a conjunction (R5).
-        let left = wrap_disjunct(&self.guard);
-        let right = wrap_disjunct(&other.guard);
-        self.guard = format!("{left} OR {right}");
+        self.guards.extend(other.guards);
+        self.guard = self
+            .guards
+            .iter()
+            .map(|g| wrap_disjunct(g))
+            .collect::<Vec<_>>()
+            .join(" OR ");
         self.referenced_outcomes.extend(other.referenced_outcomes);
+        self.summary_case_ids.extend(other.summary_case_ids);
         let rank = |p: &str| match p {
             "EXACT" => 0,
             "OVERAPPROX" => 1,
@@ -162,16 +183,8 @@ impl BehavGroup {
         if rank(&other.precision) > rank(&self.precision) {
             self.precision = other.precision;
         }
-        self.fingerprint = format!("{}+{}", self.fingerprint, other.fingerprint);
-        if self.span.is_none() {
-            self.span = other.span;
-        }
-        self.ir_path.extend(other.ir_path);
-        self.ir_path.sort();
-        self.ir_path.dedup();
-        if self.summary_case_id.is_none() {
-            self.summary_case_id = other.summary_case_id;
-        }
+        // The first member is the minimum normative ordering key; do not sort
+        // or concatenate paths, which would destroy path order and provenance.
     }
     fn finish(self) -> BehaviorCaseRow {
         BehaviorCaseRow {
@@ -186,6 +199,7 @@ impl BehavGroup {
             fingerprint: self.fingerprint,
             referenced_outcomes: self.referenced_outcomes.into_iter().collect(),
             summary_case_id: self.summary_case_id,
+            summary_case_ids: self.summary_case_ids.into_iter().collect(),
         }
     }
 }

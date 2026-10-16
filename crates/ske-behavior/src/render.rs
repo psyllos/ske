@@ -1,9 +1,7 @@
 //! Deterministic guard/value rendering. Rules R1–R6 of §7.2 (normative).
 //!
 //! - R1: guard = conjunction of constraints in path order; no algebraic
-//!   simplification. Identical rendered atoms (e.g. `b != 0` added once by a
-//!   branch negation and once by a DIV/REM/SHL/SHR operand guard) collapse to
-//!   one occurrence, keeping first-occurrence order.
+//!   simplification, including repeated constraints.
 //! - R2: negation is pushed onto comparisons and bare booleans.
 //! - R3: integer constants render in decimal per type signedness.
 //! - R4: parameters render as their ValueDef.name (else `p<index>`); globals as
@@ -12,7 +10,7 @@
 //! - R6: infix arithmetic with parentheses around every nested `BINARY`.
 use ske_symbolic::{BinaryOp, Constant, ExprArena, ExprId, ExprKind, Sort, UnaryOp};
 use std::collections::BTreeMap;
-use std::collections::BTreeSet;
+type Memo = BTreeMap<(ExprId, bool), String>;
 
 /// Symbol-name resolution. The caller maps full persisted symbol names to
 /// display names (parameter ValueDef.name, global short name). Symbols left
@@ -40,27 +38,35 @@ pub fn render_guard(arena: &ExprArena, terms: &[ExprId], names: &Names) -> Strin
     if terms.is_empty() {
         return "true".into();
     }
-    let mut seen = BTreeSet::new();
     let mut parts = Vec::new();
     for term in terms {
-        let text = render_top(arena, *term, names);
-        if seen.insert(text.clone()) {
-            parts.push(text);
+        let mut text = render_top(arena, *term, names, true);
+        if terms.len() > 1
+            && matches!(
+                arena.get(*term).map(|n| &n.kind),
+                Some(ExprKind::Binary {
+                    op: BinaryOp::Or,
+                    ..
+                })
+            )
+        {
+            text = format!("({text})");
         }
+        parts.push(text);
     }
     parts.join(" AND ")
 }
 
 /// Render a single value expression (a `RETURN`/`PANIC` operand).
 pub fn render_value(arena: &ExprArena, id: ExprId, names: &Names) -> String {
-    render_top(arena, id, names)
+    render_top(arena, id, names, false)
 }
 
 /// A guard root that is itself a bare boolean renders `b == true` (R2); a value
 /// root renders the parameter/name plainly.
-fn render_top(arena: &ExprArena, id: ExprId, names: &Names) -> String {
+fn render_top(arena: &ExprArena, id: ExprId, names: &Names, guard: bool) -> String {
     let mut counter = 0;
-    render_expr(arena, id, names, true, &mut counter, &mut BTreeMap::new())
+    render_expr(arena, id, names, guard, &mut counter, &mut BTreeMap::new())
 }
 
 fn render_expr(
@@ -69,9 +75,9 @@ fn render_expr(
     names: &Names,
     root: bool,
     counter: &mut u64,
-    memo: &mut BTreeMap<ExprId, String>,
+    memo: &mut Memo,
 ) -> String {
-    if let Some(text) = memo.get(&id) {
+    if let Some(text) = memo.get(&(id, root)) {
         return text.clone();
     }
     let node = match arena.get(id) {
@@ -104,7 +110,7 @@ fn render_expr(
         ExprKind::Field { .. } => render_unresolved(id.0 as u64, counter),
         ExprKind::Uninterpreted { .. } => render_unresolved(id.0 as u64, counter),
     };
-    memo.insert(id, rendered.clone());
+    memo.insert((id, root), rendered.clone());
     rendered
 }
 
@@ -131,9 +137,7 @@ fn render_symbol(
     let base = match display {
         Some(display) => display,
         None => {
-            if node.ty.sort == Sort::Bool {
-                name.to_owned()
-            } else if let Some(rest) = name.strip_prefix("param:") {
+            if let Some(rest) = name.strip_prefix("param:") {
                 if let Some(index) = rest.rsplit(':').next() {
                     format!("p{index}")
                 } else {
@@ -170,7 +174,7 @@ fn render_unary(
     node: &ske_symbolic::Node,
     names: &Names,
     counter: &mut u64,
-    memo: &mut BTreeMap<ExprId, String>,
+    memo: &mut Memo,
 ) -> String {
     if op == UnaryOp::Not {
         // R2: NOT on a bare boolean -> `b == false`; NOT on a comparison pushes
@@ -208,7 +212,7 @@ fn render_unary(
         let inner = render_expr(arena, arg, names, false, counter, memo);
         return format!("NOT({inner})");
     }
-    let inner = render_expr(arena, arg, names, false, counter, memo);
+    let inner = render_operand(arena, arg, names, counter, memo);
     match op {
         UnaryOp::Not => unreachable!(),
         UnaryOp::Neg => {
@@ -238,7 +242,7 @@ fn render_operand(
     id: ExprId,
     names: &Names,
     counter: &mut u64,
-    memo: &mut BTreeMap<ExprId, String>,
+    memo: &mut Memo,
 ) -> String {
     let text = render_expr(arena, id, names, false, counter, memo);
     let node = arena.get(id);
@@ -266,7 +270,7 @@ fn render_binary(
     right: ExprId,
     names: &Names,
     counter: &mut u64,
-    memo: &mut BTreeMap<ExprId, String>,
+    memo: &mut Memo,
 ) -> String {
     let operator = match op {
         BinaryOp::Add => "+",
@@ -305,10 +309,10 @@ fn render_logical_operand(
     id: ExprId,
     names: &Names,
     counter: &mut u64,
-    memo: &mut BTreeMap<ExprId, String>,
+    memo: &mut Memo,
     parent_op: BinaryOp,
 ) -> String {
-    let text = render_expr(arena, id, names, false, counter, memo);
+    let text = render_expr(arena, id, names, true, counter, memo);
     let is_conj = matches!(
         arena.get(id).map(|n| &n.kind),
         Some(ExprKind::Binary {
@@ -340,7 +344,7 @@ fn render_ite(
     else_expr: ExprId,
     _names: &Names,
     counter: &mut u64,
-    _memo: &mut BTreeMap<ExprId, String>,
+    _memo: &mut Memo,
 ) -> String {
     let _ = condition;
     let _ = then_expr;

@@ -82,6 +82,42 @@ fn render_guard_r2_negation_push_and_bare_bool() {
     );
     // Single negated comparison only.
     assert_eq!(render_guard(&a, &[not_lt], &names), "age >= 18");
+    assert_eq!(render_value(&a, enabled, &names), "enabled");
+}
+
+#[test]
+fn render_guard_r5_logical_grouping_and_r2_all_comparisons() {
+    let mut a = ExprArena::new();
+    let mut names = Names::new();
+    names.insert("x", "x").insert("y", "y").insert("z", "z");
+    let x = a.symbol(i64ty(), "x").unwrap();
+    let y = a.symbol(i64ty(), "y").unwrap();
+    let z = a.symbol(i64ty(), "z").unwrap();
+    for (op, negative) in [
+        (BinaryOp::Lt, ">="),
+        (BinaryOp::Le, ">"),
+        (BinaryOp::Gt, "<="),
+        (BinaryOp::Ge, "<"),
+        (BinaryOp::Eq, "!="),
+        (BinaryOp::Ne, "=="),
+    ] {
+        let cmp = a.binary(boolty(), op, x, y).unwrap();
+        let not = a.unary(boolty(), UnaryOp::Not, cmp).unwrap();
+        assert_eq!(render_guard(&a, &[not], &names), format!("x {negative} y"));
+    }
+    let xy = a.binary(boolty(), BinaryOp::Lt, x, y).unwrap();
+    let yz = a.binary(boolty(), BinaryOp::Lt, y, z).unwrap();
+    let xz = a.binary(boolty(), BinaryOp::Lt, x, z).unwrap();
+    let and = a.binary(boolty(), BinaryOp::And, xy, yz).unwrap();
+    let or = a.binary(boolty(), BinaryOp::Or, and, xz).unwrap();
+    assert_eq!(
+        render_guard(&a, &[or], &names),
+        "(x < y AND y < z) OR x < z"
+    );
+    assert_eq!(
+        render_guard(&a, &[or, xy], &names),
+        "((x < y AND y < z) OR x < z) AND x < y"
+    );
 }
 
 #[test]
@@ -139,7 +175,7 @@ fn sub_x_3(a: &mut ExprArena) -> ExprId {
 }
 
 #[test]
-fn render_guard_r1_dedup_identical_atoms_divmod() {
+fn render_guard_r1_preserves_repeated_atoms() {
     // DivMod else case carries the same NOT(Eq(b,0)) twice (branch negation +
     // DIV's divisor-nonzero guard). R1 renders it once.
     let mut a = ExprArena::new();
@@ -150,10 +186,16 @@ fn render_guard_r1_dedup_identical_atoms_divmod() {
     let eq = a.binary(boolty(), BinaryOp::Eq, b, zero).unwrap();
     let not_eq = a.unary(boolty(), UnaryOp::Not, eq).unwrap();
     // Same rendered atom twice.
-    assert_eq!(render_guard(&a, &[not_eq, not_eq], &names), "b != 0");
+    assert_eq!(
+        render_guard(&a, &[not_eq, not_eq], &names),
+        "b != 0 AND b != 0"
+    );
     let eq2 = a.binary(boolty(), BinaryOp::Eq, b, zero).unwrap();
     let not_eq2 = a.unary(boolty(), UnaryOp::Not, eq2).unwrap();
-    assert_eq!(render_guard(&a, &[not_eq, not_eq2], &names), "b != 0");
+    assert_eq!(
+        render_guard(&a, &[not_eq, not_eq2], &names),
+        "b != 0 AND b != 0"
+    );
     // The "b == 0" case stays.
     assert_eq!(render_guard(&a, &[eq], &names), "b == 0");
 }
@@ -242,13 +284,25 @@ fn row(
     span: Option<(u64, u64)>,
     path: Vec<&str>,
 ) -> BehaviorCaseRowInput {
+    let ir_path: Vec<(u64, u64)> = path
+        .iter()
+        .map(|p| {
+            let (d, o) = p.split_once('/').unwrap();
+            (d.parse().unwrap(), o.parse().unwrap())
+        })
+        .collect();
+    let outcome_ids = ir_path
+        .iter()
+        .map(|(d, o)| (d * 100 + o + 1) as i64)
+        .collect();
     BehaviorCaseRowInput {
         guard: guard.into(),
         exit_kind: kind.into(),
         result: result.into(),
         return_keys: vec![result.into()],
         span,
-        ir_path: path.into_iter().map(str::to_owned).collect(),
+        ir_path,
+        outcome_ids,
         memory_delta: String::new(),
         effects: String::new(),
         precision: "EXACT".into(),
@@ -277,6 +331,7 @@ fn crow(
         fingerprint: input.fingerprint,
         referenced_outcomes: Vec::new(),
         summary_case_id: None,
+        summary_case_ids: vec![],
     }
 }
 
@@ -299,6 +354,15 @@ fn behavior_case_ordering_by_span_then_ir_path() {
     // Same span: IR path lexicographic (0/0 before 0/1). Span 10 before 17.
     // No-span last.
     assert_eq!(guards, vec!["age < 18", "x <= 10", "x > 10", "no span"]);
+    let ordered = order_cases(vec![
+        crow("ten", "RETURN", "10", Some((1, 1)), vec!["10/0"]),
+        crow("two-long", "RETURN", "2", Some((1, 1)), vec!["2/0", "3/0"]),
+        crow("two", "RETURN", "2", Some((1, 1)), vec!["2/0"]),
+    ]);
+    assert_eq!(
+        ordered.iter().map(|r| r.guard.as_str()).collect::<Vec<_>>(),
+        ["two", "two-long", "ten"]
+    );
 }
 
 #[test]
@@ -310,10 +374,7 @@ fn behavior_case_dedup_conservative() {
     let merged = dedup_cases(two_returns);
     assert_eq!(merged.len(), 1, "identical exit_kind/result merge");
     assert_eq!(merged[0].guard, "a OR b");
-    assert_eq!(
-        merged[0].referenced_outcomes,
-        vec!["0/0".to_owned(), "0/1".to_owned()]
-    );
+    assert_eq!(merged[0].referenced_outcomes, vec![1, 2]);
     // Never merge RETURN with PANIC.
     let kind_change = vec![
         row("a", "RETURN", "x", Some((1, 1)), vec!["0/0"]),
@@ -334,10 +395,13 @@ fn behavior_dedup_distinguishes_opaque_returns_and_preserves_precision() {
     let mut b = row("b", "RETURN", "<expr:0>", Some((1, 1)), vec!["0/1"]);
     a.return_keys = vec!["distinct-expression-a".into()];
     b.return_keys = vec!["distinct-expression-b".into()];
+    a.summary_case_id = Some(11);
+    b.summary_case_id = Some(22);
     assert_eq!(dedup_cases(vec![a.clone(), b.clone()]).len(), 2);
     b.return_keys = a.return_keys.clone();
     b.precision = "OVERAPPROX".into();
     let merged = dedup_cases(vec![a, b]);
     assert_eq!(merged.len(), 1);
     assert_eq!(merged[0].precision, "OVERAPPROX");
+    assert_eq!(merged[0].summary_case_ids, vec![11, 22]);
 }

@@ -13,11 +13,17 @@ ENV = dict(os.environ, PATH=f"{ROOT / 'target/debug'}:{os.environ['PATH']}")
 
 
 def execute(command):
-    result = subprocess.run(["bash", "-o", "pipefail", "-c", command],
-                            cwd=ROOT, env=ENV, text=True, capture_output=True)
-    text = result.stdout + result.stderr
-    if result.returncode:
-        raise AssertionError(f"exit {result.returncode}\n{text}")
+    process = subprocess.Popen(["bash", "-o", "pipefail", "-c", command],
+                               cwd=ROOT, env=ENV, text=True,
+                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    chunks = []
+    for line in process.stdout:
+        chunks.append(line)
+        print(line, end="", flush=True)
+    text = "".join(chunks)
+    code = process.wait()
+    if code:
+        raise AssertionError(f"exit {code}\n{text}")
     return text
 
 

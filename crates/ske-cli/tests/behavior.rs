@@ -35,12 +35,22 @@ fn behavior_check_exact_reference() {
         ("age >= 18 AND enabled == false", "return ErrDisabled"),
         ("age >= 18 AND enabled == true", "return nil"),
     ];
+    let result_spans = [
+        "check.go:10:3-10:21",
+        "check.go:13:3-13:21",
+        "check.go:15:2-15:12",
+    ];
     for (i, (when, then)) in expected.iter().enumerate() {
         assert_eq!(list[i]["ordinal"], i as u64);
         assert_eq!(list[i]["when"].as_str().unwrap(), *when);
         assert_eq!(list[i]["then"].as_str().unwrap(), *then);
         assert_eq!(list[i]["exit_kind"], "RETURN");
         assert_eq!(list[i]["precision"], "EXACT");
+        assert!(list[i]["evidence"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["relation"] == "RESULT_SITE" && e["span"] == result_spans[i]));
     }
     let mut covered = std::collections::BTreeSet::new();
     for c in list {
@@ -132,6 +142,56 @@ fn behavior_failure_rolls_back_scenario_run_and_rules() {
         )
         .unwrap();
     assert_eq!(runs, 0);
+}
+
+#[test]
+fn behavior_dedup_retains_every_summary_and_result_site() {
+    let lab = Lab::new();
+    let q = ske_query::Query::open(&lab.db).unwrap();
+    q.summarize_scalar("latest", None, "example.Check", &Default::default())
+        .unwrap();
+    let c = lab.conn();
+    // Controlled persistence fixture: make both error exits return the same
+    // expression, so the normative grouping rule must merge them.
+    c.execute(
+        "UPDATE summary_case_returns SET expression_id=(
+           SELECT r.expression_id FROM summary_case_returns r JOIN summary_cases sc ON sc.id=r.summary_case_id
+           JOIN source_spans sp ON sp.id=sc.exit_span_id WHERE sp.start_line=10 LIMIT 1)
+         WHERE summary_case_id IN (
+           SELECT sc.id FROM summary_cases sc JOIN source_spans sp ON sp.id=sc.exit_span_id WHERE sp.start_line=13)",
+        [],
+    ).unwrap();
+    let result = q
+        .reconstruct_behaviors("latest", None, "example.Check", 100, 0)
+        .unwrap();
+    assert_eq!(result["cases"].as_array().unwrap().len(), 2);
+    let merged = &result["cases"][0]["evidence"];
+    assert_eq!(
+        merged
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["relation"] == "DERIVED_FROM")
+            .count(),
+        2
+    );
+    assert_eq!(
+        merged
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["relation"] == "RESULT_SITE")
+            .count(),
+        2
+    );
+    let anchors: i64 = c
+        .query_row(
+            "SELECT COUNT(*) FROM knowledge_evidence WHERE relation='DERIVED_FROM'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(anchors, 3);
 }
 
 #[test]
@@ -639,4 +699,59 @@ fn summaries_reuse_across_snapshots() {
     assert_eq!(entry["cases"], 2);
     assert_eq!(entry["metrics"]["summaries_reused"], 1);
     assert_eq!(entry["metrics"]["summaries_computed"], 1);
+
+    // Build options invalidate all reuse even when the function body and unit
+    // key remain identical (an otherwise unused build tag).
+    let mut changed_profile = profile("linux", "amd64");
+    changed_profile["tags"] = serde_json::json!(["ske_unused_validation_tag"]);
+    std::fs::write(&profile_path, changed_profile.to_string()).unwrap();
+    let configured = ingest("new build configuration");
+    let c_id = configured["snapshot_id"].as_i64().unwrap();
+    let configured_summary = q
+        .summarize_scalar(
+            &c_id.to_string(),
+            None,
+            "example.Check",
+            &Default::default(),
+        )
+        .unwrap();
+    assert_eq!(configured_summary["metrics"]["summaries_computed"], 1);
+    assert_eq!(configured_summary["metrics"]["summaries_reused"], 0);
+    q.summarize_scalar(
+        &c_id.to_string(),
+        None,
+        "example.Decide",
+        &Default::default(),
+    )
+    .unwrap();
+
+    // A structural change under the same build configuration also invalidates.
+    let decide = repo.join("decide.go");
+    let text = std::fs::read_to_string(&decide)
+        .unwrap()
+        .replace("return -1", "return -11");
+    std::fs::write(&decide, text).unwrap();
+    let changed = ingest("changed body");
+    let d_id = changed["snapshot_id"].as_i64().unwrap();
+    let changed_summary = q
+        .summarize_scalar(
+            &d_id.to_string(),
+            None,
+            "example.Decide",
+            &Default::default(),
+        )
+        .unwrap();
+    assert_eq!(changed_summary["metrics"]["summaries_computed"], 1);
+    assert_eq!(changed_summary["metrics"]["summaries_reused"], 0);
+    let deps: i64 = c
+        .query_row(
+            "SELECT COUNT(*) FROM analysis_dependencies WHERE snapshot_id=?1",
+            [b_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        deps >= 4,
+        "FUNCTION and SUMMARY dependencies must be durable"
+    );
 }

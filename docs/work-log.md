@@ -840,3 +840,72 @@ Pas de nouveau rejeu intégral de verify/v0.1–v0.4 après ces corrections.
 Prochain travail : traiter les points encore ouverts du rapport de revue,
 puis seulement relancer la validation complète. Aucun push ni merge partagé.
 
+## v0.5 validée — validation complète exécutée [L843-999]
+
+Les constats ouverts de la revue ont été traités puis vérifiés par exécution.
+`docs/validation/review-v0.5-open.md` détaille chaque constat et sa preuve.
+
+### Corrections finales de la reprise
+
+- Rendu R1 strict : suppression de l'assimilation de contraintes par texte
+  (répétition conservée) ; garde vide `true` ; la double garde DIV implicite
+  n'est plus dupliquée dans l'arène (`same_boolean_predicate`).
+- Ordre des cas non normatif : paires numériques (décision_ordinal,
+  outcome_ordinal) dans `ir_path`, fingerprint de cas structurel, tri par
+  span puis chemin numérique.
+- Lookup d'issues : ids numériques d'outcome conservés de bout en bout ;
+  `outcome_identity` ; rejet `E_AMBIGUOUS` en cas de correspondance ambiguë
+  par unité.
+- Cache/réutilisation : canonicalisation §4.6 `structural()` (indépendante
+  des ids de flux, des spans, des types inutilisés) ; namespace
+  `ske-summary-scalar-0.5-cache-v2` ; lignes `analysis_dependencies`
+  (FUNCTION/SUMMARY) ; savepoint rollback sur copie incomplète ;
+  correspondance qualified_name+unit_key dans le lookup.
+- stale-check : correspondance dans l'unité correspondante + `E_AMBIGUOUS` +
+  transaction ; `analysis_assumptions` copiées dans le run de reconstruction.
+- Adaptateur Go : spans de sortie complets (ReturnStmt source, pas seulement
+  le mot-clé `return`) pour RESULT_SITE.
+
+### Validation complète exécutée
+
+```
+SKE_EXPECT_VERIFY_VERSION=v0.5 python3 scripts/validate-v05.py
+```
+
+Exit 0. Résultats (logs `target/validation-v05/AC-0.5-*.log`).
+
+- AC-0.5-01..11, 13 : v0.5 (rendu, référence Check, règles/evidence,
+  Decide sans return non atteint, Adjusted/Entry/DivMod, dédup, MemOpaque
+  OVERAPPROX, pas de texte métier, réutilisation de résumés, stale-check,
+  YAML==JSON, migration 0002 / 50 tables) : **PASS**.
+- AC-0.5-12 : `./scripts/verify.sh` (fmt, clippy `-D warnings`, check-deps +
+  selftest, gen-proto + `git diff --exit-code`, build `-D warnings`, db check
+  50 tables/21 triggers, fixtures, compteurs, golden/negative/counts, Go
+  vet/test/build, ingest go, db check, `cargo test --workspace`,
+  `validate-v03.py --verify-cases`, snapshots idempotents, marqueur
+  `VERIFY OK v0.5`) puis `validate-v04.py` : **14/14 AC PASS**, et en cascade
+  v0.3 (29), v0.2 (25), v0.1 (42) : tous **PASS**.
+  Voir `target/validation-v01..v05/results.json` (42+25+29+14+13 AC, aucun
+  NON_RUN, aucun ignoré).
+
+### État final
+
+- v0.5 : **13/13 AC PASS** ; non-régression complète 42+25+29+14 AC PASS.
+- `docs/implementation-status.md` : v0.5 DONE ; fonctionnalités behavior,
+  règles et réutilisation à DONE (périmètre borné documenté).
+- `docs/soundness-and-limits.md` : section v0.5 réécrite (périmètre livré et
+  limites assumées).
+- `docs/validation/v0.5.md` : rapport final régénéré puis marqué « validée ».
+- `docs/validation/review-v0.5-open.md` : clôturée (tous les constats traités).
+- Pas de push ni de merge vers une branche partagée : modifications locales
+  non commitées à ce stade, checkpoint local à créer sur `ske/implementation`.
+
+Limites v0.5 (déclarées, non bloquantes) : réutilisation bornée aux
+configurations de snapshot identiques et au mode moteur v0.5 ; scénarios =
+groupements techniques DETERMINISTIC/UNVALIDATED ; rules UNVALIDATED sauf
+STALE ; pas de graphe de dépendances multi-snapshot exploité au-delà de
+`analysis_dependencies`.
+
+Prochaines étapes : checkpoint Git local (commit) de l'état validé, puis
+v0.5 suivante sur demande explicite ; ne pas recommencer v0.1–v0.4.
+
