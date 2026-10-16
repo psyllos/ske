@@ -58,6 +58,10 @@ enum Command {
         #[command(subcommand)]
         command: Db,
     },
+    Paths {
+        #[command(subcommand)]
+        command: Paths,
+    },
 }
 
 #[derive(Subcommand)]
@@ -138,6 +142,21 @@ enum Runs {
 #[derive(Subcommand)]
 enum Db {
     Check,
+}
+#[derive(Subcommand)]
+enum Paths {
+    Explore {
+        #[arg(long)]
+        source: String,
+        #[arg(long)]
+        target: String,
+        #[arg(long)]
+        max_depth: Option<usize>,
+        #[arg(long)]
+        max_paths: Option<usize>,
+        #[arg(long)]
+        max_nodes: Option<usize>,
+    },
 }
 
 fn execute(cli: &Cli) -> Result<(Value, i32)> {
@@ -300,6 +319,26 @@ fn execute(cli: &Cli) -> Result<(Value, i32)> {
             }
             value
         }
+        Command::Paths {
+            command:
+                Paths::Explore {
+                    source,
+                    target,
+                    max_depth,
+                    max_paths,
+                    max_nodes,
+                },
+        } => query.paths_explore(
+            &cli.snapshot,
+            repository,
+            source,
+            target,
+            *max_depth,
+            *max_paths,
+            *max_nodes,
+            cli.limit,
+            cli.offset,
+        )?,
     };
     Ok((value, status))
 }

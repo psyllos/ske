@@ -10,6 +10,7 @@ mod analysis;
 pub mod analysis_config;
 mod analysis_load;
 mod analysis_read;
+mod callgraph;
 
 pub struct Query {
     storage: Storage,
@@ -157,6 +158,36 @@ impl Query {
             ));
         }
         Ok(json!({"run_id":run,"run_status":"FAILED"}))
+    }
+    pub fn callgraph(&self, snapshot: &str, repository: Option<&str>) -> Result<Value> {
+        let sid = self.snapshot(snapshot, repository)?;
+        callgraph::callgraph(self.db(), sid)
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub fn paths_explore(
+        &self,
+        snapshot: &str,
+        repository: Option<&str>,
+        source: &str,
+        target: &str,
+        max_depth: Option<usize>,
+        max_paths: Option<usize>,
+        max_nodes: Option<usize>,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Value> {
+        let sid = self.snapshot(snapshot, repository)?;
+        callgraph::paths_explore(
+            self.db(),
+            sid,
+            source,
+            target,
+            max_depth,
+            max_paths,
+            max_nodes,
+            limit,
+            offset,
+        )
     }
     fn db(&self) -> &Connection {
         &self.storage.conn
