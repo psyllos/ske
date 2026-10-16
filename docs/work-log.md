@@ -665,3 +665,57 @@ Après correction, `cargo test -p ske-ingest --test adapter_ipc` :
 
 Main reste inchangée en attendant une CI verte sur ce correctif.
 
+## v0.5 — reprise : connaissance comportementale
+
+Demande du commanditaire (thread partagé) : reprendre l'implémentation de SKE
+selon §24 de la spécification v1.4 ; v0.1 → v0.4 validées, ne pas
+réimplémenter ; exécuter v0.5 tâche par tâche ; déléguer des lots indépendants
+aux agents pour préserver le contexte ; conserver décisions/commandes/
+résultats/limites au dépôt ; aucun PASS sans exécution de la vérification ;
+aucun push/merge partagé sans autorisation.
+
+### État Git vérifié (début)
+
+- Worktree Delta sur `main` (02df44f) au démarrage = v0.1–v0.3 + correctif
+  adaptateur ; v0.4 n'y figure pas.
+- Toute la v0.4 validée vit sur `origin/ske/implementation` : pointe
+  9106713 (« Fix adapter exit error precedence under hard memory limits »),
+  dont l'ancêtre est ab7b6bb « Complete and validate SKE v0.4 ».
+- `main` et `ske/implementation` divergent depuis 8004d2f (v0.1–v0.3).
+  Correctif adaptateur appliqué deux fois : main/d160ad3 puis branch/9106713.
+- Bascule du worktree sur une branche locale `ske/implementation`
+  (tracking origin) : arbre propre, HEAD 9106713, crates v0.4 présents
+  (ske-abstract, ske-summary).
+
+### Environnement
+
+Rust 1.99.0 (rust-toolchain), Go 1.27.2 darwin/arm64, Z3 5.1.0
+(ske-solver lié à libz3). `cargo build --workspace` OK ; adaptateur Go
+compilé dans target/ske-adapter-go.
+
+### Périmètre v0.5 (spécification §7.2, §7.5, §8.4, §11.2, §13, §Tableau v0.5)
+
+- T-0.5-07 : migration `0002_capabilities.sql` (§8.4 normatif) : 3 tables +
+  2 index ; AC-0.5-13 (50 tables total, 21 triggers, db check inchangé).
+- T-0.5-01 : extraction des cas (§7.2) + déduplication conservatrice.
+- T-0.5-02 : rendu des gardes R1–R6 (crate `ske-behavior`, AC-0.5-01).
+- T-0.5-03 : persistance behavior_scenarios/cases/case_outcomes,
+  functional_rules, knowledge_evidence (§8.2 existantes).
+- T-0.5-04 : CLI `ske behaviors reconstruct` (JSON/YAML), `ske rules list
+  --with-evidence`, `ske rules stale-check`.
+- T-0.5-05 : copie-sur-réutilisation des résumés (§13, AC-0.5-09) avec
+  metrics summaries_reused/summaries_computed et reused_from_summary_id.
+- T-0.5-06 : tests, docs, verify.sh v0.5 ; validation/v0.5.md.
+
+### Observations de l'expérimentation (probe)
+
+Résumés v0.4 corrects pour Check (3 cas EXACT), Decide (2 cas, pas de
+return -2), Adjusted (2), Entry/helper (2), DivMod (2), MemOpaque (3
+OVERAPPROX). Expressions persistées : symboles `param:<fn>:<idx>`,
+globles `init:{Global("…")}@n:havoc#k`, pointees
+`init:{ParamPointee(…)}@n:havoc#k`, constantes i64 deux-complément
+(18446744073709551615 = -1). Rendus attendus : voir Tableau §v0.5.
+
+Prochaine étape : plan de modifications détaillé, lots délégables, puis
+implémentation / tests / migration / validation chronométrés.
+
