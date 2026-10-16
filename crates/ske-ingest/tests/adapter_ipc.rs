@@ -179,6 +179,21 @@ fn adapter_limits_memory_stops_allocating_child_before_timeout() {
     );
 }
 
+#[test]
+fn adapter_limits_nonzero_exit_without_done_is_process_failure() {
+    // A hard address-space limit may fail an allocation and make the child
+    // exit before the RSS watchdog samples it. Missing Done must not mask
+    // that non-zero process exit as a mere record-order error.
+    let failed = ChildFixture::new(&[], "exit 42");
+    assert_eq!(failed.list(&limits()).unwrap_err().code, "E_ADAPTER_LIMIT");
+    // A successful but incomplete protocol remains a protocol error.
+    let incomplete = ChildFixture::new(&[], "exit 0");
+    assert_eq!(
+        incomplete.list(&limits()).unwrap_err().code,
+        "E_RECORD_ORDER"
+    );
+}
+
 fn decide_records() -> Vec<Record> {
     let path =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/cir/decide.cir.pb");

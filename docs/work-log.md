@@ -634,3 +634,34 @@ Branche locale `ske/implementation` ; aucun push ni merge partagé,
 aucun tag modifié. CI distante non exécutée. v0.5 non commencée :
 ne pas la démarrer sans nouvelle demande.
 
+## Landing demandé par `/land`
+
+L'autorisation de publication/intégration est désormais explicite.
+`origin` = `https://github.com/psyllos/ske`, destination `main` ; le remote
+`local` n'est pas une destination de publication. Arbre propre au départ,
+main distant à `8004d2f`, ancêtre du checkpoint `ab7b6bb`.
+
+La branche `ske/implementation` a été publiée pour validation avant de
+modifier `main`. CI :
+`https://github.com/psyllos/ske/actions/runs/38900342322`.
+Échec Linux identique au défaut déjà présent sur main
+(run `38878648861`) :
+`adapter_limits_memory_stops_allocating_child_before_timeout` retourne
+`E_RECORD_ORDER` au lieu de `E_ADAPTER_LIMIT`. Le job macOS a passé Tests,
+puis son workflow complet a été annulé par le fail-fast de la matrice.
+
+Cause : sous Linux, la limite dure d'espace d'adressage peut faire échouer
+l'allocation Python et terminer le processus avant l'échantillonnage RSS.
+Le parsing détectait l'absence de Done et retournait avant de contrôler la
+sortie non nulle. Correction de la priorité d'erreurs, avec attente bornée
+de 50 ms maximum sur le chemin d'erreur (aucune attente bloquante illimitée).
+
+Régression ajoutée :
+`adapter_limits_nonzero_exit_without_done_is_process_failure` — FAIL réel
+avant correction ; exit non nul sans Done => E_ADAPTER_LIMIT, mais exit 0
+sans Done reste E_RECORD_ORDER. Le test mémoire existant n'est pas affaibli.
+Après correction, `cargo test -p ske-ingest --test adapter_ipc` :
+16 PASS, aucun ignoré ; Clippy strict ske-ingest et diff --check verts.
+
+Main reste inchangée en attendant une CI verte sur ce correctif.
+

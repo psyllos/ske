@@ -277,6 +277,33 @@ fn run<T>(
                 "adapter time/memory monitoring limit exceeded",
             ));
         }
+        // A Linux hard address-space limit can make an allocation fail and
+        // the process exit before the RSS watchdog samples it. At EOF the
+        // protocol parser reports missing Done; do not let that mask a failed
+        // process. Give process teardown a small, bounded grace period, without
+        // waiting indefinitely for a malformed adapter that is still running.
+        let deadline = Instant::now() + Duration::from_millis(50);
+        loop {
+            let status = process
+                .child
+                .lock()
+                .unwrap()
+                .try_wait()
+                .map_err(|e| err("E_ADAPTER_LIMIT", e.to_string()))?;
+            if let Some(status) = status {
+                if !status.success() {
+                    return Err(err(
+                        "E_ADAPTER_LIMIT",
+                        format!("adapter exited with {status}"),
+                    ));
+                }
+                break;
+            }
+            if Instant::now() >= deadline {
+                break;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
         return value;
     }
     // Never hold the child mutex in wait(): the watchdog must be able to kill it.
