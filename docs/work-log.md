@@ -410,3 +410,49 @@ Implémentation en cours, **aucun AC v0.4 PASS**. Aucun push, aucun merge
 partagé, aucun tag modifié. Prochaine étape : déléguer les lots indépendants
 puis intégrer le moteur des résumés.
 
+### Threads v0.4 délégués
+
+- Lot A — ske-abstract (intervalles) :
+  `ksQQ9uo16AT0RrqL7JdWZgoH9ZLOAAlbU5IBxBDZiRjivQ9OQqTS_tRBC-14`
+- Lot B — interpréteur concret :
+  `ksQQ9uo16AT0RrqL7JdWZgoH9ZLOAAlbXZIBxBDZiRjivQ9OQqTS_tRBC-14`
+- Lot C — chemins statiques + graphe d'appels :
+  `ksQQ9uo16AT0RrqL7JdWZgoH9ZLOAAlbZJIBxBDZiRjivQ9OQqTS_tRBC-14`
+
+Coordinateur : intégration du moteur des résumés (T-0.4-02/03/04), mode
+intervalles dans le moteur, `ske-summary`, persistance summary_* dans
+ske-query, tests AC, `verify.sh`, validation. Fusion des lots via
+`merge_worktrees` après leurs rapports.
+
+### Plan moteur des résumés (lot D, après fusion A/B/C)
+
+Le moteur v0.3 havogue tout `CALL`. Pour v0.4 il faut (contrats relus) :
+
+- DTO purs `ske-symbolic::summary` (ou crate `ske-summary`) : `FunctionSummary`
+  (function_id, context_fingerprint, summary_fingerprint, precision, complete,
+  cases[], assumptions, unknowns) et `SummaryCase` (case_ordinal,
+  guard: Vec<ExprId>, returns: Vec<ExprId> UNE par valeur de retour,
+  exit_kind, memory_delta, effects, referenced_outcomes, precision).
+- Calcul : explorer la fonction avec params symboliques (déjà fait par
+  `analyze`), chaque `record_exit` ⇒ un cas (pas de fusion en v0.4, §7.1).
+  Les retours multiples : le RESULT d'un CALL à multi-retours est un tuple ;
+  `ssa.Extract` devient `EXTRACT_FIELD` (index 0, 1, …) — vérifié dans
+  `adapters/go/internal/lower/instructions.go`. La liaison au site d'appel
+  suit §7.1 : tuple ⇒ `EXTRACT_FIELD` sur la liste.
+- Application aux sites d'appel : substitution mémoïsée param→arguments sur
+  le DAG (`ExprArena`), forker l'état par cas dont `contraintes ∧ garde’` est
+  `Sat` (`Unknown` ⇒ garder + dégrader soundness), ajouter les effets, lier
+  les returns au résultat, `referenced_outcomes` = issues IR du cas.
+  Cible inconnue ⇒ havoc (§6.10).
+- Récursion : SCC (Tarjan) résumés bas-en-haut ; `max_recursion_unfold=2`
+  dépliages puis cas résiduel `PARTIAL`, `unknowns += RECURSION_BOUND`.
+- Clé de cache §7.1/ADR-021 : `sha256_hex(structural|semantic|context|
+  callees triés|modèles|config)`.
+- Persistance : `function_summaries` + `summary_cases` + `summary_case_returns`
+  + `summary_case_outcomes` + `observable_effects` (tables déjà présentes dans
+  `0001_initial.sql`) ; `analysis_runs.analysis_kind='SUMMARY'`.
+- Tests AC cibles : summary_entry, entry_precondition, summary_calldoer,
+  summary_fact, summary_divmod, summary_divide2, summary_matches_concrete
+  (avec interpréteur concret lot B), summary_deterministic ;
+  analyse_sum_intervals (avec ske-abstract lot A).
+
