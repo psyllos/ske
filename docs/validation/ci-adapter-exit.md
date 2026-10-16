@@ -57,3 +57,14 @@ Pas de runtime Docker Linux disponible (daemon non démarré) ; la régression
 d'ordre EOF/sortie est reproduite sur macOS, mais l'application effective de
 `prlimit` reste à confirmer en CI Linux après publication autorisée du correctif.
 Aucun push ni merge partagé effectué, workflow inchangé.
+
+## Confirmation distante après autorisation `/land`
+
+La limite de validation Linux ci-dessus est levée : le correctif `d160ad3`
+a été publié sur `fix/adapter-eof-exit-status` et le run
+https://github.com/psyllos/ske/actions/runs/38901608478 a terminé avec succès.
+Ubuntu et macOS passent Format, Clippy, `cargo test --workspace --locked`
+et `./scripts/verify.sh`. Durées des jobs : 6 min 55 s et 8 min 55 s.
+Le test mémoire Linux passe sans modification de ses assertions ni plafonds.
+Cette confirmation autorise la suite de l'intégration demandée vers `main` ;
+elle ne modifie pas la branche distante v0.4.

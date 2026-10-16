@@ -369,3 +369,12 @@ Validation macOS : fmt, Clippy strict, 33 tests ske-ingest, workspace
 Rapport : `docs/validation/ci-adapter-exit.md` ; logs locaux :
 `target/validation-ci/`. Linux corrigé et CI distante à confirmer après
 publication autorisée. Aucun push/merge, aucun changement v0.4 récupéré.
+
+### Confirmation CI et demande d'intégration
+
+Après autorisation explicite `/land`, correctif `d160ad3` publié sur
+`fix/adapter-eof-exit-status`. Run GitHub `38901608478` : **SUCCESS**,
+jobs Ubuntu et macOS verts, tests workspace locked et workflow de conformité
+complets inclus. Le défaut mémoire Linux est donc confirmé corrigé à distance.
+Intégration vers `main` engagée après ce résultat ; aucun changement de la
+branche distante `ske/implementation` (v0.4).
