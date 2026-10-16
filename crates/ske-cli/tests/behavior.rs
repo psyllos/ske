@@ -347,9 +347,9 @@ fn rules_stale_check_detects_function_change() {
         .arg("--repository")
         .arg(&repo_name)
         .arg("--from")
-        .arg(&a_id.to_string())
+        .arg(a_id.to_string())
         .arg("--to")
-        .arg(&b_id.to_string())
+        .arg(b_id.to_string())
         .arg("--format")
         .arg("json")
         .output()
@@ -380,4 +380,144 @@ fn rules_stale_check_detects_function_change() {
         [a_id], |r| r.get(0),
     ).unwrap();
     assert_eq!(check_ok, 3);
+}
+
+#[test]
+fn summaries_reuse_across_snapshots() {
+    // Ingest the same repo twice -> snapshots A and B. Compute summaries in A,
+    // then in B. B must reuse every function's summary (summaries_reused = count,
+    // summaries_computed = 0, reused_from_summary_id non-NULL) with identical
+    // results (modulo ids).
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("k.sqlite");
+    let repo = dir.path().join("lab");
+    std::fs::create_dir_all(&repo).unwrap();
+    fn copy_dir(from: &std::path::Path, to: &std::path::Path) {
+        for entry in std::fs::read_dir(from).unwrap() {
+            let entry = entry.unwrap();
+            let name = entry.file_name();
+            let text = name.to_str().unwrap();
+            if text.ends_with(".cir.pb") || text == "tags" || text == "partial" {
+                continue;
+            }
+            let target = to.join(&name);
+            if entry.file_type().unwrap().is_dir() {
+                std::fs::create_dir_all(&target).unwrap();
+                copy_dir(&entry.path(), &target);
+            } else {
+                std::fs::copy(entry.path(), &target).unwrap();
+            }
+        }
+    }
+    copy_dir(&root().join("examples/go-branch-lab"), &repo);
+    let run = |args: &[&str]| -> serde_json::Value {
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_ske"))
+            .env_remove("SKE_DB")
+            .env("GOMAXPROCS", "2")
+            .args(args)
+            .arg("--db")
+            .arg(&db)
+            .arg("--format")
+            .arg("json")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        serde_json::from_slice(&out.stdout).unwrap()
+    };
+    run(&["init"]);
+    let profile_path = dir.path().join("p.json");
+    let ingest = |snapshot_label: &str| -> serde_json::Value {
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_ske"))
+            .env_remove("SKE_DB")
+            .env("GOMAXPROCS", "2")
+            .args([
+                "ingest",
+                "go",
+                "--repo",
+                repo.to_str().unwrap(),
+                "--adapter",
+                adapter().to_str().unwrap(),
+                "--yes-run-adapter",
+                "--profile",
+                profile_path.to_str().unwrap(),
+                "--db",
+            ])
+            .arg(&db)
+            .arg("--format")
+            .arg("json")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "ingest {snapshot_label}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        serde_json::from_slice(&out.stdout).unwrap()
+    };
+    std::fs::write(&profile_path, profile("linux", "amd64").to_string()).unwrap();
+    let a = ingest("A");
+    let a_id = a["snapshot_id"].as_i64().unwrap();
+    let b = ingest("B");
+    let b_id = b["snapshot_id"].as_i64().unwrap();
+    assert_ne!(a_id, b_id);
+    // Compute summaries for Check + Decide + DivMod in A (capture results).
+    let q = ske_query::Query::open(&db).unwrap();
+    let mut a_results = Vec::new();
+    for name in ["example.Check", "example.Decide", "example.DivMod"] {
+        let s = q
+            .summarize_scalar(&a_id.to_string(), None, name, &Default::default())
+            .unwrap();
+        assert_eq!(s["metrics"]["summaries_computed"], 1);
+        assert_eq!(s["metrics"]["summaries_reused"], 0);
+        a_results.push((name.to_owned(), s));
+    }
+    // Compute the same in B: everything must be reused.
+    let mut results = Vec::new();
+    for name in ["example.Check", "example.Decide", "example.DivMod"] {
+        let s = q
+            .summarize_scalar(&b_id.to_string(), None, name, &Default::default())
+            .unwrap();
+        assert_eq!(
+            s["metrics"]["summaries_computed"], 0,
+            "{name}: B must not recompute"
+        );
+        assert_eq!(s["metrics"]["summaries_reused"], 1, "{name}: B must reuse");
+        results.push((name.to_owned(), s));
+    }
+    // reused_from_summary_id non-NULL on every B summary row.
+    for name in ["example.Check", "example.Decide", "example.DivMod"] {
+        let reused: i64 =
+            {
+                let c = rusqlite::Connection::open(&db).unwrap();
+                c.query_row(
+                "SELECT COUNT(*) FROM function_summaries fs JOIN functions f ON f.id=fs.function_id
+                 JOIN symbols s ON s.id=f.symbol_id
+                 WHERE s.qualified_name=?1 AND fs.reused_from_summary_id IS NOT NULL",
+                [name], |r| r.get(0),
+            ).unwrap()
+            };
+        assert_eq!(reused, 1, "{name}: reused_from_summary_id set");
+    }
+    // Results identical to A (same case count / precision per function):
+    // compare the A results captured before B was summarized with B's.
+    assert_eq!(a_results.len(), results.len());
+    for ((a_name, in_a), (b_name, in_b)) in a_results.iter().zip(&results) {
+        assert_eq!(a_name, b_name);
+        assert_eq!(
+            in_a["cases"], in_b["cases"],
+            "{a_name}: identical case count"
+        );
+        assert_eq!(
+            in_a["precision"], in_b["precision"],
+            "{a_name}: identical precision"
+        );
+        assert_eq!(
+            in_a["complete"], in_b["complete"],
+            "{a_name}: identical completeness"
+        );
+    }
 }

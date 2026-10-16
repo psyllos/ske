@@ -55,7 +55,10 @@ fn extract_global(symbol: &str) -> Option<String> {
     let start = symbol.find("Global(\"")? + "Global(\"".len();
     let end = symbol[start..].find('"')? + start;
     let qualified = &symbol[start..end];
-    qualified.split('.').last().map(|s| s.to_owned())
+    qualified
+        .rsplit_once('.')
+        .map(|(_, s)| s.to_owned())
+        .or_else(|| Some(qualified.to_owned()))
 }
 
 /// Reachable closure of an expression (itself + operands) in ascending
