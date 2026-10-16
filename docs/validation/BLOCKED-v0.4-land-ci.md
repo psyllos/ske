@@ -1,4 +1,31 @@
-# BLOCKED — landing v0.4 : annulation SIGINT
+# Résolution du blocage — landing v0.4 : annulation SIGINT
+
+## État final de validation
+
+Le code candidat `6b3cfda` a une CI **verte sur Linux et macOS**, y compris
+tests workspace locked et workflow complet :
+https://github.com/psyllos/ske/actions/runs/38937118281.
+
+`RUST_TEST_THREADS=1 python3 scripts/validate-v04.py` termine avec exit 0 :
+14 AC v0.4 + 96 AC précédents PASS, environ 25 minutes. Les sous-commandes
+et leurs assertions sont inchangées ; la sérialisation des tests Rust est
+explicite et héritée dans les quatre validateurs.
+
+La relance locale précédente en parallélisme par défaut a échoué sur deux
+tests adaptateur : délai de 2 s dépassé dans
+`adapter_limits_invalid_frame_does_not_wait_for_child_exit` et fichier PID
+absent dans `adapter_limits_timeout_kills_descendants_holding_pipes`.
+Ces échecs ne sont ni effacés ni assimilés à des PASS ; les 19 tests
+adaptateur passent en séquentiel et la CI système passe en configuration
+normale. Leur robustesse sous contention reste un suivi distinct.
+
+`origin/main` (`02df44f`) a été réconciliée par `e8666d3` : la règle EOF
+de main est conservée exactement, sans le délai de grâce local antérieur,
+et les tests des deux branches sont conservés. Le landing autorisé est
+préparé en avance rapide, sans réécriture de l'historique.
+
+Les sections ci-dessous décrivent les tentatives historiques, pas l'état
+courant. Le nom du fichier est conservé pour préserver les liens existants.
 
 ## Diagnostic ciblé : propriété du gestionnaire SIGINT
 

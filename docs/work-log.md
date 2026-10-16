@@ -807,3 +807,36 @@ Tests locaux solveur : 14 PASS, dont définitions entre lots, termes multilignes
 et push/pop ; Clippy strict workspace et formatage PASS avant publication.
 La validation complète interrompue n'a pas donné de résultat final AC-0.4-14 ;
 elle doit être rejouée sur ce correctif. Main toujours inchangée.
+
+## Validation finale du candidat de landing v0.4
+
+Code candidat `6b3cfda`, après fusion de main `02df44f` dans `e8666d3`.
+CI https://github.com/psyllos/ske/actions/runs/38937118281 :
+SUCCESS Linux et macOS, formatage, Clippy, `cargo test --workspace --locked`
+et `./scripts/verify.sh` compris, sans sérialisation Rust imposée.
+
+La validation locale par défaut a d'abord échoué sur deux tests adaptateur :
+`adapter_limits_invalid_frame_does_not_wait_for_child_exit` (délai de 2 s)
+et `adapter_limits_timeout_kills_descendants_holding_pipes` (fichier PID
+absent). Aucun correctif produit supplémentaire, délai augmenté ou test
+ignoré pour contourner ces échecs.
+
+Relance contrôlée :
+`RUST_TEST_THREADS=1 python3 scripts/validate-v04.py` — exit 0,
+14/14 v0.4 + 42/42 v0.1 + 25/25 v0.2 + 29/29 v0.3 PASS.
+Les quatre results.json sont vérifiés, pas seulement la dernière ligne.
+Durée environ 25 minutes ; journaux dans `target/land/validate-v04-serial.log`
+et `target/validation-v0*/`. Les rapports régénérés héritent explicitement
+du mode séquentiel et ne prétendent pas annuler l'échec local précédent.
+
+Coût constaté des validateurs : AC-0.4-14 appelle verify.sh puis v0.3,
+qui rappelle verify.sh puis v0.2, qui rappelle verify.sh puis v0.1,
+qui rappelle verify.sh. Quatre workflows complets, plus les AC spécifiques,
+avec sortie capturée à chaque niveau. À améliorer séparément par orchestration
+unique et preuves communes explicites, jamais par réutilisation silencieuse
+de vieux rapports. Les tests adaptateur sensibles à la contention restent
+également un suivi distinct.
+
+Landing `/land` autorisé : rapports consolidés puis avance rapide de main
+uniquement après CI verte du candidat final. Aucun changement normatif,
+golden, migration ou fichier généré ; v0.5 non commencée dans ce thread.
