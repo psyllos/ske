@@ -447,6 +447,24 @@ pas de diff). Les « unpushed deltas » du status sont des deltas de
 conversation, pas du code. Confirme : le lot B initial n'a produit aucun
 code — la relance B′ était nécessaire.
 
+### Décision : abandon de la délégation (6/6 sous-agents vides)
+
+Tous les sous-agents délégués sont revenus sans code : A (ske-abstract,
+échec « Connection to Cegedim interrupted » pendant l'exploration),
+B et B′ (interpréteur concret), C et C′ (paths explore), D (moteur des
+résumés) — tous `No unmerged changes`, aucun fichier créé, aucun diff.
+Les causes observées : coupure de connexion du fournisseur et épuisement du
+contexte des sous-agents pendant la phase de lecture/conception, avant toute
+écriture de fichier. Les prompts « design-complet » des relances n'ont pas
+suffi.
+
+Le coordinateur implémente désormais v0.4 directement, tâche par tâche, dans
+l'ordre des dépendances : (1) `ske-abstract` (AC-0.4-09), (2) `concrete`
+(AC-0.4-08), (3) `paths explore` + callgraph (AC-0.4-01/02), (4) moteur des
+résumés + `ske-summary` (AC-0.4-03..07, 12, 13), (5) mode `intervals` dans le
+moteur (AC-0.4-10), (6) persistance ske-query (AC-0.4-12), (7) tests AC,
+(8) verify.sh + validation. Aucun AC v0.4 encore PASS.
+
 Coordinateur : intégration du moteur des résumés (T-0.4-02/03/04), mode
 intervalles dans le moteur, `ske-summary`, persistance summary_* dans
 ske-query, tests AC, `verify.sh`, validation. Fusion des lots via
