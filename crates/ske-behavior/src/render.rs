@@ -37,6 +37,9 @@ impl Names {
 
 /// Render a guard: the conjunction of terms in path order (R1).
 pub fn render_guard(arena: &ExprArena, terms: &[ExprId], names: &Names) -> String {
+    if terms.is_empty() {
+        return "true".into();
+    }
     let mut seen = BTreeSet::new();
     let mut parts = Vec::new();
     for term in terms {

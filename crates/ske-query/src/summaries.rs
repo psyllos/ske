@@ -19,8 +19,8 @@ fn engine_error(message: String) -> Error {
     Error::new("E_INTERNAL", message)
 }
 
-/// §4.6 structural fingerprint: sha256 of the canonical serialization of the
-/// function's body (no flow ids, no spans). Shared with stale-check.
+/// Legacy v0.4 serialization hash, also used by stale-check. Full §4.6
+/// canonicalization independent of flow IDs remains to be audited for v0.5.
 pub(crate) fn structural(program: &Program) -> String {
     // Length-delimited protobuf records avoid ambiguous concatenation. Map
     // iteration is ordered, independent of SQLite IDs and extraction order.
@@ -340,7 +340,7 @@ impl Calculation<'_> {
              JOIN analysis_runs ar ON ar.id=fs.produced_by_run_id
              JOIN snapshots s ON s.id=ar.snapshot_id
              JOIN repositories r ON r.id=s.repository_id
-             WHERE fs.context_fingerprint=?1 AND fs.summary_fingerprint=?2
+             WHERE fs.context_fingerprint=?1 AND fs.summary_fingerprint=?2 AND fs.complete=1
                AND ar.snapshot_id IN (
                  SELECT s2.id FROM snapshots s2
                  JOIN repositories r2 ON r2.id=s2.repository_id
@@ -369,7 +369,12 @@ impl Calculation<'_> {
             source_snapshot,
         )?;
         // Mirror compute()'s recursion bookkeeping before the early return.
-        let recursion = self.active.get(&function).copied().unwrap_or(0);
+        let recursion = self
+            .active
+            .get(&function)
+            .copied()
+            .unwrap_or(1)
+            .saturating_sub(1);
         if recursion == 0 {
             self.active.remove(&function);
         } else {
@@ -390,8 +395,15 @@ pub fn run(db: &Connection, snapshot: i64, entry: i64, budget: &Budget) -> Resul
         "max_recursion_unfold":budget.max_recursion_unfold,"solver_rlimit":budget.solver_rlimit,
         "solver_wall_timeout_ms":budget.solver_wall_timeout_ms,"solver_seed":budget.solver_seed
     }))?;
+    let snapshot_config: String = tx
+        .query_row(
+            "SELECT config_fingerprint FROM snapshots WHERE id=?1",
+            [snapshot],
+            |r| r.get(0),
+        )
+        .map_err(sql)?;
     let config = sha256_hex(format!(
-        "{budget_json}|ske-summary-scalar-0.4|{}|{}",
+        "{snapshot_config}|{budget_json}|ske-summary-scalar-0.5|{}|{}",
         solver.name(),
         solver.version()
     ));
@@ -399,7 +411,7 @@ pub fn run(db: &Connection, snapshot: i64, entry: i64, budget: &Budget) -> Resul
     tx.execute(
         "INSERT INTO analysis_runs(snapshot_id,entry_function_id,analysis_kind,engine_version,
          solver_name,solver_version,config_fingerprint,assumptions_fingerprint,budget_json,status)
-         VALUES(?1,?2,'SUMMARY','ske-summary-scalar-0.4',?3,?4,?5,?6,?7,'RUNNING')",
+         VALUES(?1,?2,'SUMMARY','ske-summary-scalar-0.5',?3,?4,?5,?6,?7,'RUNNING')",
         params![
             snapshot,
             entry,
@@ -513,6 +525,17 @@ fn copy_summary_rows(
         "SELECT id FROM function_summaries WHERE function_id=?1 AND context_fingerprint=?2 AND summary_fingerprint=?3",
         params![target_function, context, fingerprint],
         |r| r.get(0),
+    )
+    .map_err(sql)?;
+    db.execute(
+        "INSERT INTO analysis_assumptions(analysis_run_id,kind,description,payload)
+         SELECT ?1,a.kind,a.description,a.payload FROM analysis_assumptions a
+         JOIN function_summaries fs ON fs.produced_by_run_id=a.analysis_run_id
+         WHERE fs.id=?2 AND NOT EXISTS (
+           SELECT 1 FROM analysis_assumptions existing
+           WHERE existing.analysis_run_id=?1 AND existing.kind=a.kind
+             AND existing.payload IS a.payload)",
+        params![target_run, source_summary_id],
     )
     .map_err(sql)?;
 
@@ -748,22 +771,29 @@ fn copy_span(db: &Connection, source: i64, target: i64, span: i64) -> Result<i64
 fn copy_ir_outcome(db: &Connection, source: i64, target: i64, ir_outcome: i64) -> Result<i64> {
     let edge_key: String = db
         .query_row(
-            "SELECT e.local_key FROM ir_outcomes io JOIN control_edges e ON e.id=io.control_edge_id WHERE io.id=?1 AND e.local_key IN (SELECT local_key FROM control_edges)",
-            [ir_outcome],
+            "SELECT e.local_key FROM ir_outcomes io
+             JOIN control_edges e ON e.id=io.control_edge_id
+             JOIN basic_blocks b ON b.id=e.source_block_id
+             JOIN functions f ON f.id=b.function_id
+             JOIN symbols s ON s.id=f.symbol_id
+             WHERE io.id=?1 AND s.snapshot_id=?2",
+            params![ir_outcome, source],
             |r| r.get(0),
         )
         .map_err(sql)?;
     let target_id: Option<i64> = db
         .query_row(
-            "SELECT io.id FROM ir_outcomes io JOIN control_edges e ON e.id=io.control_edge_id
+            "SELECT io.id FROM ir_outcomes io
+             JOIN control_edges e ON e.id=io.control_edge_id
              JOIN basic_blocks b ON b.id=e.source_block_id
-             WHERE e.local_key=?1 AND b.id IN (SELECT id FROM basic_blocks WHERE function_id IN (SELECT id FROM functions WHERE id IN (SELECT id FROM functions)))",
-            [edge_key],
+             JOIN functions f ON f.id=b.function_id
+             JOIN symbols s ON s.id=f.symbol_id
+             WHERE e.local_key=?1 AND s.snapshot_id=?2",
+            params![edge_key, target],
             |r| r.get(0),
         )
         .optional()
         .map_err(sql)?;
-    let _ = (source, target);
     target_id.ok_or_else(|| Error::new("E_DB_INTEGRITY", "IR outcome not found in target snapshot"))
 }
 
@@ -771,14 +801,15 @@ fn copy_ir_outcome(db: &Connection, source: i64, target: i64, ir_outcome: i64) -
 /// `snapshot`. This is the counterpart of the original engine computation: the
 /// reconstructed cases feed composition exactly like freshly computed ones.
 fn reconstruct_summary(db: &Connection, summary_id: i64, snapshot: i64) -> Result<FunctionSummary> {
-    let (_symbol_id, precision, complete, unknowns): (i64, String, bool, String) = db
+    let (function, precision, complete, unknowns): (i64, String, bool, String) = db
         .query_row(
-            "SELECT f.symbol_id, fs.precision, fs.complete, fs.unknowns_json
+            "SELECT f.id, fs.precision, fs.complete, fs.unknowns_json
              FROM function_summaries fs JOIN functions f ON f.id=fs.function_id WHERE fs.id=?1",
             [summary_id],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
         .map_err(sql)?;
+    let program = analysis_load::load(db, function)?;
     let mut arena = ExprArena::new();
     // Map persisted expression id -> arena id.
     let mut expr_map: BTreeMap<i64, ExprId> = BTreeMap::new();
@@ -829,12 +860,21 @@ fn reconstruct_summary(db: &Connection, summary_id: i64, snapshot: i64) -> Resul
             _ => Soundness::Overapprox,
         };
         let partial = case_precision == "PARTIAL";
+        let mut taken_outcomes = Path(None);
+        for row in query_maps(db,
+            "SELECT ir_outcome_id FROM summary_case_outcomes WHERE summary_case_id=?1 ORDER BY path_ordinal",
+            [source_case])? {
+            taken_outcomes = Path(Some(std::sync::Arc::new(ske_symbolic::engine::PathNode {
+                previous: taken_outcomes,
+                outcome: row["ir_outcome_id"].as_i64().unwrap().to_string(),
+            })));
+        }
         cases.push(Exit {
             kind: exit_kind,
             instruction_id: format!("summary_case_{source_case}"),
             constraints,
             soundness,
-            taken_outcomes: Path(None),
+            taken_outcomes,
             values,
             partial,
             memory_delta,
@@ -844,9 +884,27 @@ fn reconstruct_summary(db: &Connection, summary_id: i64, snapshot: i64) -> Resul
         serde_json::from_str(&unknowns).map_err(|e| engine_error(e.to_string()))?;
     let assumptions = query_maps(db, "SELECT kind FROM analysis_assumptions WHERE analysis_run_id IN (SELECT produced_by_run_id FROM function_summaries WHERE id=?1) ORDER BY kind", [summary_id])?
         .iter().map(|a| a["kind"].as_str().unwrap_or("").to_owned()).collect();
+    let global_reads = arena
+        .iter()
+        .filter_map(|(_, node)| {
+            let ExprKind::Symbol(symbol) = &node.kind else {
+                return None;
+            };
+            let (_, rest) = symbol.split_once("Global(")?;
+            let (quoted, _) = rest.split_once(')')?;
+            let global = serde_json::from_str::<String>(quoted).ok()?;
+            Some((symbol.clone(), global, node.ty.clone()))
+        })
+        .collect();
+    let opaque_effects: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM observable_effects e JOIN summary_cases c ON c.id=e.summary_case_id
+         WHERE c.summary_id=?1 AND e.effect_kind='UNKNOWN_EFFECT')", [summary_id], |r| r.get(0),
+    ).map_err(sql)?;
     Ok(FunctionSummary {
-        function_id: format!("summary_{summary_id}"),
-        parameter_symbols: vec![],
+        function_id: program.function.id.clone(),
+        parameter_symbols: (0..program.function.parameter_value_ids.len())
+            .map(|index| format!("param:{}:{index}", program.function.id))
+            .collect(),
         arena,
         cases,
         precision: match precision.as_str() {
@@ -860,8 +918,8 @@ fn reconstruct_summary(db: &Connection, summary_id: i64, snapshot: i64) -> Resul
         residual: false,
         assumptions,
         unknowns,
-        composable: true,
-        global_reads: vec![],
+        composable: !opaque_effects,
+        global_reads,
     })
 }
 
@@ -909,9 +967,8 @@ fn reconstruct_expr_in_arena(
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .map_err(sql)?;
-        let payload_text = String::from_utf8_lossy(&payload)
-            .trim_matches('"')
-            .to_owned();
+        let raw = String::from_utf8_lossy(&payload);
+        let payload_text = serde_json::from_str::<String>(&raw).unwrap_or_else(|_| raw.to_string());
         let ty = expression_type_from_db(db, type_id)?;
         let operands: Vec<ExprId> = {
             let mut stmt = db
@@ -1050,7 +1107,9 @@ fn build_summary_node(
         },
         "FIELD" => ExprKind::Field {
             base: operands[0],
-            index: 0,
+            index: payload_text
+                .parse::<u32>()
+                .map_err(|e| Error::new("E_DB_INTEGRITY", format!("invalid FIELD index: {e}")))?,
         },
         "UNINTERPRETED" => ExprKind::Uninterpreted {
             name: payload_text.to_owned(),
@@ -1067,4 +1126,20 @@ fn build_summary_node(
         ty: ty.clone(),
         kind,
     })
+}
+
+#[cfg(test)]
+mod persisted_expression_tests {
+    use super::*;
+
+    #[test]
+    fn reused_field_hydration_preserves_nonzero_index() {
+        let ty = Type {
+            local_key: "field-result".into(),
+            sort: Sort::Uninterpreted,
+        };
+        let node = build_summary_node("FIELD", "3", &ty, &[ExprId(0)]).unwrap();
+        assert!(matches!(node.kind, ExprKind::Field { index: 3, .. }));
+        assert!(build_summary_node("FIELD", "not-an-index", &ty, &[ExprId(0)]).is_err());
+    }
 }

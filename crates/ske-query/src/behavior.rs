@@ -187,7 +187,9 @@ fn build_expr(
             ty: ty.clone(),
             kind: ExprKind::Field {
                 base: operands[0],
-                index: 0,
+                index: payload_text.parse::<u32>().map_err(|e| {
+                    Error::new("E_DB_INTEGRITY", format!("invalid FIELD index: {e}"))
+                })?,
             },
         }),
         "UNINTERPRETED" => intern(Node {
@@ -332,7 +334,7 @@ fn span_line_col(db: &Connection, span: i64) -> Result<Option<(u64, u64)>> {
 
 /// Map IR-outcome edge labels (already local) to the linked source outcomes
 /// (`example.Check/sd0/o0`), preserving the first-seen order.
-fn source_outcomes_for(db: &Connection, ir_labels: &[String]) -> Result<Vec<Value>> {
+fn source_outcomes_for(db: &Connection, snapshot: i64, ir_labels: &[String]) -> Result<Vec<Value>> {
     let mut out = Vec::new();
     for label in ir_labels {
         let rows = rows(
@@ -342,8 +344,12 @@ fn source_outcomes_for(db: &Connection, ir_labels: &[String]) -> Result<Vec<Valu
              JOIN source_decisions sd ON sd.id=so.decision_id
              JOIN ir_outcomes io ON io.id=l.ir_outcome_id
              JOIN control_edges e ON e.id=io.control_edge_id
-             WHERE e.local_key=?1 OR e.local_key LIKE '%|'||?1",
-            [label],
+             JOIN basic_blocks b ON b.id=e.source_block_id
+             JOIN functions f ON f.id=b.function_id
+             JOIN symbols s ON s.id=f.symbol_id
+             JOIN compilation_units u ON u.id=s.unit_id
+             WHERE e.local_key=u.unit_key||'|'||?1 AND s.snapshot_id=?2",
+            params![label, snapshot],
         )?;
         for row in rows {
             let so = local(&row["so_key"]).as_str().unwrap_or("").to_owned();
@@ -367,6 +373,8 @@ pub fn reconstruct(
     limit: usize,
     offset: usize,
 ) -> Result<Value> {
+    let tx = db.unchecked_transaction().map_err(sql)?;
+    let db: &Connection = &tx;
     let summary_id: i64 = db
         .query_row(
             "SELECT fs.id FROM function_summaries fs WHERE fs.function_id=?1 AND fs.complete=1 ORDER BY fs.id DESC LIMIT 1",
@@ -422,6 +430,22 @@ pub fn reconstruct(
         let (guard, returns, span) = render_case(db, snapshot, case, &mut names)?;
         let exit_kind = case["exit_kind"].as_str().unwrap_or("RETURN").to_owned();
         let result = returns.join(", ");
+        let return_keys = rows(
+            db,
+            "SELECT e.expression_hash FROM summary_case_returns r
+             JOIN symbolic_expressions e ON e.id=r.expression_id
+             WHERE r.summary_case_id=?1 ORDER BY r.return_ordinal",
+            [case["id"].as_i64().unwrap()],
+        )?
+        .into_iter()
+        .map(|r| r["expression_hash"].as_str().unwrap().to_owned())
+        .collect();
+        let effects = rows(
+            db,
+            "SELECT effect_kind,target_descriptor,payload,semantic_model_fingerprint,precision
+             FROM observable_effects WHERE summary_case_id=?1 ORDER BY effect_ordinal",
+            [case["id"].as_i64().unwrap()],
+        )?;
         let outcomes: Vec<String> = rows(
             db,
             "SELECT o.local_key AS ir_outcome FROM summary_case_outcomes sco
@@ -440,13 +464,15 @@ pub fn reconstruct(
             guard,
             exit_kind: exit_kind.clone(),
             result: result.clone(),
+            return_keys,
             span,
             ir_path: outcomes.clone(),
             memory_delta: case["memory_delta_json"]
                 .as_str()
                 .unwrap_or("[]")
                 .to_owned(),
-            effects: String::new(),
+            effects: serde_json::to_string(&effects)
+                .map_err(|e| Error::new("E_INTERNAL", e.to_string()))?,
             precision: case["precision"].as_str().unwrap_or("UNKNOWN").to_owned(),
             fingerprint: format!(
                 "{}@case{}",
@@ -458,13 +484,8 @@ pub fn reconstruct(
     }
     let grouped = dedup_cases(inputs);
     let total = grouped.len();
-    let page_cases = grouped
-        .into_iter()
-        .skip(offset)
-        .take(limit)
-        .collect::<Vec<_>>();
     let mut out_cases = Vec::new();
-    for (ordinal, behavior) in page_cases.into_iter().enumerate() {
+    for (ordinal, behavior) in grouped.into_iter().enumerate() {
         let rule_key = format!("{qualified}@run{run}#case{ordinal}");
         let result_text = if behavior.exit_kind == "RETURN" {
             format!("return {}", behavior.result)
@@ -472,7 +493,7 @@ pub fn reconstruct(
             "panic".to_owned()
         };
         let summary_case_id = behavior.summary_case_id;
-        let source_outcomes = source_outcomes_for(db, &behavior.referenced_outcomes)?;
+        let source_outcomes = source_outcomes_for(db, snapshot, &behavior.referenced_outcomes)?;
         let case_id = persist_case(
             db,
             snapshot,
@@ -482,7 +503,7 @@ pub fn reconstruct(
             &behavior,
             &result_text,
         )?;
-        let evidence = persist_evidence(db, case_id, summary_case_id, &behavior)?;
+        let evidence = persist_evidence(db, snapshot, case_id, summary_case_id, &behavior)?;
         out_cases.push(json!({
             "ordinal": ordinal,
             "rule_key": rule_key,
@@ -504,14 +525,16 @@ pub fn reconstruct(
         "SELECT kind FROM analysis_assumptions WHERE analysis_run_id=?1 ORDER BY id",
         [summary_run],
     )?;
-    Ok(json!({
+    let response = json!({
         "function": qualified,
         "run_id": run,
         "precision": precision,
         "assumptions": json!(assumptions.iter().map(|a| a["kind"].clone()).collect::<Vec<_>>()),
-        "cases": out_cases,
+        "cases": out_cases.into_iter().skip(offset).take(limit).collect::<Vec<_>>(),
         "page": super::page(limit, offset, total),
-    }))
+    });
+    tx.commit().map_err(sql)?;
+    Ok(response)
 }
 
 /// Persist one behavior case (+ its IR outcomes) and its functional rule.
@@ -543,8 +566,12 @@ fn persist_case(
     for label in &behavior.referenced_outcomes {
         let id: Option<i64> = db
             .query_row(
-                "SELECT io.id FROM ir_outcomes io JOIN control_edges e ON e.id=io.control_edge_id WHERE e.local_key=?1 OR e.local_key LIKE '%|'||?1",
-                [label],
+                "SELECT io.id FROM ir_outcomes io JOIN control_edges e ON e.id=io.control_edge_id
+                 JOIN basic_blocks b ON b.id=e.source_block_id
+                 JOIN functions f ON f.id=b.function_id JOIN symbols s ON s.id=f.symbol_id
+                 JOIN compilation_units u ON u.id=s.unit_id
+                 WHERE e.local_key=u.unit_key||'|'||?1 AND s.snapshot_id=?2",
+                params![label, snapshot],
                 |r| r.get(0),
             )
             .optional()
@@ -576,6 +603,7 @@ fn persist_case(
 /// borrowed IR outcome), RESULT_SITE (exit span). Returns the JSON evidence list.
 fn persist_evidence(
     db: &Connection,
+    snapshot: i64,
     case_id: i64,
     summary_case_id: Option<i64>,
     behavior: &ske_behavior::BehaviorCaseRow,
@@ -606,8 +634,12 @@ fn persist_evidence(
     for label in &behavior.referenced_outcomes {
         let ir_id: Option<i64> = db
             .query_row(
-                "SELECT io.id FROM ir_outcomes io JOIN control_edges e ON e.id=io.control_edge_id WHERE e.local_key=?1 OR e.local_key LIKE '%|'||?1",
-                [label],
+                "SELECT io.id FROM ir_outcomes io JOIN control_edges e ON e.id=io.control_edge_id
+                 JOIN basic_blocks b ON b.id=e.source_block_id
+                 JOIN functions f ON f.id=b.function_id JOIN symbols s ON s.id=f.symbol_id
+                 JOIN compilation_units u ON u.id=s.unit_id
+                 WHERE e.local_key=u.unit_key||'|'||?1 AND s.snapshot_id=?2",
+                params![label, snapshot],
                 |r| r.get(0),
             )
             .optional()

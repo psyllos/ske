@@ -737,3 +737,106 @@ stale-check, copie-sur-réutilisation), le CLI, le harness et la docs ; si les
 sous-agents reviennent vides, leurs lots seront repris directement de la même
 manière. Fusion des worktrees a posteriori via `merge_worktrees`.
 
+## Reprise v0.5 — corrections de sûreté après interruptions
+
+Base Git réelle : `f5a612d` sur `ske/implementation`, changements de harness
+et rapports non commités au départ. Aucun push ni merge vers une branche
+partagée. Les validations historiques v0.1–v0.4 sont conservées comme acquis ;
+leur rejeu sur l'état v0.5 est une nouvelle vérification, pas une réimplémentation.
+
+### Résultats délégués
+
+- Lot A rendu : rapport vide, aucun code récupéré ; implémentation locale.
+- Lot B migration : livré et récupéré précédemment (`0d7b922`).
+- Revue indépendante en cours dans le thread
+  `ksQQEfcnmHasRuOdMYFaCCg3kpLOABYZgJIBxBDZiRjivQ9OQqTS_tRBC-14`
+  (lecture seule, sûreté de behavior/reuse). Ne pas présumer son approbation.
+
+### Défauts reproduits et corrigés dans cette reprise
+
+1. Le test de réutilisation comparait seulement nombres de cas et précision.
+   Une assertion de cohérence des snapshots a réellement échoué :
+   **10 références IR copiées pointaient encore vers le snapshot source**.
+   `copy_ir_outcome` filtre désormais explicitement source et destination.
+2. Réutiliser un callee puis calculer un nouvel appelant échouait réellement
+   avec `summary argument arity mismatch`. La réhydratation reconstruit les
+   paramètres, identités de fonction, chemins d'issues et noms JSON décodés.
+   Les lectures globales et la présence de UNKNOWN_EFFECT sont conservées.
+3. Déduplication : comparer les seuls rendus pouvait fusionner deux expressions
+   opaques distinctes affichées `<expr:0>`. La clé des retours est maintenant
+   structurelle ; les effets persistés sont chargés ; fusion de précisions
+   conserve la plus faible garantie. Régression dédiée ajoutée.
+4. Reconstruction des comportements : transaction et persistance de tous les
+   cas avant pagination ; ne pas renuméroter un sous-ensemble paginé.
+   Résolution des issues/source/evidence bornée au snapshot demandé et sans
+   motif SQL LIKE sur une clé de flux.
+5. Harness : correction de la commande Cargo à trois filtres invalides ;
+   option `--only` conservant les autres AC en NOT_RUN et exit non nul tant
+   que le jalon n'est pas entièrement validé. Le marqueur de verify est
+   littéralement `VERIFY OK v0.5`, pas une valeur fournie par l'environnement.
+
+### Commandes effectivement exécutées
+
+- `cargo test -p ske-cli --test behavior summaries_reuse_across_snapshots` :
+  FAIL reproduit (10 références inter-snapshots), puis FAIL reproduit (arité),
+  puis PASS avec vérification des rendus A/B et composition helper → Entry.
+- `cargo fmt --all && cargo test -p ske-behavior &&
+  cargo test -p ske-cli --test behavior &&
+  cargo clippy --workspace --all-targets -- -D warnings && git diff --check` :
+  exit 0 ; **11 tests de crate + 11 tests d'intégration**, aucun ignoré ;
+  Clippy strict et diff propres.
+- `python3 scripts/validate-v05.py --only 13` : AC-0.5-13 PASS
+  (`cargo test -p ske-storage`, 13 tests) ; autres AC NOT_RUN dans cette
+  invocation. Exit 1 intentionnel puisque la validation globale reste ouverte.
+- Artefacts de rejeu trouvés au début : 42/42 v0.1, 25/25 v0.2, 29/29 v0.3 ;
+  v0.4 : **13/14 seulement dans le rejeu**, AC-0.4-14 interrompu.
+  Ce ne sont pas des validations finales de l'état corrigé ci-dessus.
+
+### Prochaines étapes obligatoires (v0.5 non validée)
+
+1. Intégrer les constats de la revue indépendante, corriger et tester avant
+   toute annonce DONE. Vérifier notamment unités multiples et ambiguïtés.
+2. Auditer la clé de réutilisation : configuration de snapshot/build/profil,
+   canonicalisation §4.6 sans ids de flux/spans, refus ou recalcul transactionnel
+   si la correspondance est ambiguë ; enregistrer les dépendances §13.
+3. Vérifier par tests négatifs les effets, la provenance d'une fusion de
+   plusieurs cas, les spans de sortie complets, les ordres numériques des
+   chemins (pas seulement lexicographiques des clés de flux).
+4. Compléter R1–R6 (garde vide, identités opaques, aucun effacement indu par
+   comparaison de rendus) et les démonstrations scénario/capacité §7.5.
+5. Après corrections : `python3 scripts/validate-v05.py` (sans `--only`),
+   non-régression complète et mise à jour finale des rapports. Ne pas répéter
+   la longue chaîne avant de traiter les défauts fonctionnels ci-dessus.
+
+Les anciens commits dont le message cite des AC ne remplacent pas ces
+vérifications : **v0.5 reste PARTIAL**, sans dérogation accordée.
+
+### Fin de la reprise — revue reçue et point durable
+
+La revue indépendante est terminée, sans approbation de v0.5. Ses neuf
+constats et leur suivi sont conservés dans
+`docs/validation/review-v0.5-open.md`. Plusieurs constats concernaient le
+checkpoint précédant les corrections ; ils ne sont pas présumés clos sans tests.
+
+Corrections supplémentaires : hypothèses source copiées/unionnées dans les
+runs réutilisés ; indices FIELD lus depuis leur payload dans les deux
+lecteurs ; cache borné à la configuration de snapshot et namespace moteur
+v0.5 ; garde vide rendue `true`. Les cas partiels ne sont pas réutilisés comme
+résumés complets. Tests ajoutés pour pagination et rollback de reconstruction.
+
+Dernière chaîne exécutée :
+
+```sh
+cargo fmt --all
+cargo test -p ske-behavior
+cargo test -p ske-cli --test behavior
+cargo test -p ske-query reused_field_hydration_preserves_nonzero_index
+cargo clippy --workspace --all-targets -- -D warnings
+git diff --check
+```
+
+Exit 0 : **11 + 13 + 1 tests PASS**, aucun ignoré ; Clippy strict propre.
+Pas de nouveau rejeu intégral de verify/v0.1–v0.4 après ces corrections.
+Prochain travail : traiter les points encore ouverts du rapport de revue,
+puis seulement relancer la validation complète. Aucun push ni merge partagé.
+

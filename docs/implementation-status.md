@@ -14,7 +14,8 @@ Ne pas commencer v0.2 avant les 42 AC v0.1 PASS ou dérogation approuvée.
 | v0.2 — Go | DONE | 25 AC PASS après correction des six défauts de revue ; 42 AC v0.1 toujours PASS |
 | v0.3 — analyse symbolique et preuves | DONE | 29 AC PASS ; non-régression 42 AC v0.1 + 25 AC v0.2 ; voir validation/v0.3.md et le dernier journal |
 | v0.4 — analyse interprocédurale | DONE | 14 AC PASS ; 42 AC v0.1 + 25 AC v0.2 + 29 AC v0.3 PASS ; voir validation/v0.4.md et les frontières de précision dans soundness-and-limits.md |
-| v0.5–v0.7 | NOT_STARTED | Hors périmètre v0.4 |
+| v0.5 — connaissance comportementale | PARTIAL | Implémentation et tests ciblés présents ; revue de sûreté et validation complète encore ouvertes. Voir le dernier journal et validation/v0.5.md |
+| v0.6–v0.7 | NOT_STARTED | Hors périmètre de la demande actuelle |
 
 ## Fonctionnalités §1.1
 

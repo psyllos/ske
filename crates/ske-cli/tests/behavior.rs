@@ -84,6 +84,57 @@ fn behavior_check_rules_and_evidence_11() {
 }
 
 #[test]
+fn behavior_pagination_persists_all_cases_without_renumbering() {
+    let lab = Lab::new();
+    let q = ske_query::Query::open(&lab.db).unwrap();
+    let page = q
+        .reconstruct_behaviors("latest", None, "example.Check", 1, 1)
+        .unwrap();
+    assert_eq!(page["cases"].as_array().unwrap().len(), 1);
+    assert_eq!(page["cases"][0]["ordinal"], 1);
+    assert_eq!(page["cases"][0]["then"], "return ErrDisabled");
+    assert_eq!(page["page"]["total"], 3);
+    let rules = q.list_rules("latest", None, true, 100, 0).unwrap();
+    assert_eq!(rules["rules"].as_array().unwrap().len(), 3);
+}
+
+#[test]
+fn behavior_failure_rolls_back_scenario_run_and_rules() {
+    let lab = Lab::new();
+    let q = ske_query::Query::open(&lab.db).unwrap();
+    q.summarize_scalar("latest", None, "example.Check", &Default::default())
+        .unwrap();
+    let c = lab.conn();
+    c.execute(
+        "UPDATE symbolic_expressions SET kind='INVALID_TEST_NODE'",
+        [],
+    )
+    .unwrap();
+    assert!(q
+        .reconstruct_behaviors("latest", None, "example.Check", 100, 0)
+        .is_err());
+    for table in [
+        "behavior_scenarios",
+        "behavior_cases",
+        "functional_rules",
+        "knowledge_evidence",
+    ] {
+        let count: i64 = c
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0, "{table} must roll back");
+    }
+    let runs: i64 = c
+        .query_row(
+            "SELECT COUNT(*) FROM analysis_runs WHERE analysis_kind='BEHAVIOR'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(runs, 0);
+}
+
+#[test]
 fn behavior_decide_no_unreachable_return() {
     let lab = Lab::new();
     let q = ske_query::Query::open(&lab.db).unwrap();
@@ -486,6 +537,17 @@ fn summaries_reuse_across_snapshots() {
             "{name}: B must not recompute"
         );
         assert_eq!(s["metrics"]["summaries_reused"], 1, "{name}: B must reuse");
+        let run = s["run_id"].as_i64().unwrap();
+        let assumptions: i64 = rusqlite::Connection::open(&db)
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM analysis_assumptions
+             WHERE analysis_run_id=?1 AND kind IN ('SEQUENTIAL_EXECUTION','CLOSED_ENTRY_CONTEXT')",
+                [run],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(assumptions, 2, "reuse must preserve mandatory assumptions");
         results.push((name.to_owned(), s));
     }
     // reused_from_summary_id non-NULL on every B summary row.
@@ -504,6 +566,27 @@ fn summaries_reuse_across_snapshots() {
     }
     // Results identical to A (same case count / precision per function):
     // compare the A results captured before B was summarized with B's.
+    let c = rusqlite::Connection::open(&db).unwrap();
+    let cross_snapshot_outcomes: i64 = c
+        .query_row(
+            "SELECT COUNT(*) FROM summary_case_outcomes sco
+         JOIN summary_cases sc ON sc.id=sco.summary_case_id
+         JOIN function_summaries fs ON fs.id=sc.summary_id
+         JOIN analysis_runs ar ON ar.id=fs.produced_by_run_id
+         JOIN ir_outcomes io ON io.id=sco.ir_outcome_id
+         JOIN control_edges e ON e.id=io.control_edge_id
+         JOIN basic_blocks b ON b.id=e.source_block_id
+         JOIN functions f ON f.id=b.function_id
+         JOIN symbols s ON s.id=f.symbol_id
+         WHERE ar.snapshot_id<>s.snapshot_id",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        cross_snapshot_outcomes, 0,
+        "reused outcomes must belong to the destination snapshot"
+    );
     assert_eq!(a_results.len(), results.len());
     for ((a_name, in_a), (b_name, in_b)) in a_results.iter().zip(&results) {
         assert_eq!(a_name, b_name);
@@ -519,5 +602,41 @@ fn summaries_reuse_across_snapshots() {
             in_a["complete"], in_b["complete"],
             "{a_name}: identical completeness"
         );
+        let original = q
+            .reconstruct_behaviors(&a_id.to_string(), None, a_name, 100, 0)
+            .unwrap();
+        let reused = q
+            .reconstruct_behaviors(&b_id.to_string(), None, b_name, 100, 0)
+            .unwrap();
+        for (a_case, b_case) in original["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .zip(reused["cases"].as_array().unwrap())
+        {
+            for field in ["when", "then", "precision", "source_outcomes"] {
+                assert_eq!(a_case[field], b_case[field], "{a_name}: {field}");
+            }
+        }
     }
+    // A new caller must be able to apply a reused callee, not just report its
+    // case count. Only helper is cached in A; Entry must be computed in B.
+    q.summarize_scalar(
+        &a_id.to_string(),
+        None,
+        "example.helper",
+        &Default::default(),
+    )
+    .unwrap();
+    let entry = q
+        .summarize_scalar(
+            &b_id.to_string(),
+            None,
+            "example.Entry",
+            &Default::default(),
+        )
+        .unwrap();
+    assert_eq!(entry["cases"], 2);
+    assert_eq!(entry["metrics"]["summaries_reused"], 1);
+    assert_eq!(entry["metrics"]["summaries_computed"], 1);
 }

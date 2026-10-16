@@ -17,7 +17,7 @@ import sqlite3, sys
 db = sqlite3.connect(sys.argv[1])
 tables = db.execute("SELECT count(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchone()[0]
 triggers = db.execute("SELECT count(*) FROM sqlite_master WHERE type='trigger'").fetchone()[0]
-assert (tables, triggers) == (47, 21), (tables, triggers)
+assert (tables, triggers) == (50, 21), (tables, triggers)
 PY
 cargo run -p ske-cir --example gen_fixtures -- --negative --out "$work/fx"
 diff -r "$work/fx" tests/fixtures/cir
@@ -66,4 +66,6 @@ db = sqlite3.connect(sys.argv[1])
 rows = db.execute("SELECT id, source_fingerprint, config_fingerprint FROM snapshots ORDER BY id").fetchall()
 assert len(rows) == 2 and rows[0][0] != rows[1][0] and rows[0][1:] == rows[1][1:], rows
 PY
-printf 'VERIFY OK v0.4\n'
+# v0.5: behaviors require the Go adapter build; behavior tests exercise the
+# full reconstruct -> rules -> evidence pipeline against the trusted adapter.
+printf 'VERIFY OK v0.5\n'

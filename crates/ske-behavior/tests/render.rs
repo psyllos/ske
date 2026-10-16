@@ -57,6 +57,7 @@ fn render_guard_r1_conjunction_in_path_order() {
     let eighteen = cons(&mut a, i64ty(), 18);
     let lt = a.binary(boolty(), BinaryOp::Lt, age, eighteen).unwrap();
     assert_eq!(render_guard(&a, &[lt], &names), "age < 18");
+    assert_eq!(render_guard(&a, &[], &names), "true");
 }
 
 #[test]
@@ -245,6 +246,7 @@ fn row(
         guard: guard.into(),
         exit_kind: kind.into(),
         result: result.into(),
+        return_keys: vec![result.into()],
         span,
         ir_path: path.into_iter().map(str::to_owned).collect(),
         memory_delta: String::new(),
@@ -324,4 +326,18 @@ fn behavior_case_dedup_conservative() {
         row("b", "RETURN", "y", Some((1, 2)), vec!["0/1"]),
     ];
     assert_eq!(dedup_cases(diff_result).len(), 2);
+}
+
+#[test]
+fn behavior_dedup_distinguishes_opaque_returns_and_preserves_precision() {
+    let mut a = row("a", "RETURN", "<expr:0>", Some((1, 1)), vec!["0/0"]);
+    let mut b = row("b", "RETURN", "<expr:0>", Some((1, 1)), vec!["0/1"]);
+    a.return_keys = vec!["distinct-expression-a".into()];
+    b.return_keys = vec!["distinct-expression-b".into()];
+    assert_eq!(dedup_cases(vec![a.clone(), b.clone()]).len(), 2);
+    b.return_keys = a.return_keys.clone();
+    b.precision = "OVERAPPROX".into();
+    let merged = dedup_cases(vec![a, b]);
+    assert_eq!(merged.len(), 1);
+    assert_eq!(merged[0].precision, "OVERAPPROX");
 }

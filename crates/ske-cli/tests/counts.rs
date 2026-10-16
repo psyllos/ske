@@ -36,14 +36,15 @@ fn check(name: &str, column: usize) {
             "{name}: {table}"
         );
     }
-    for table in [
-        "repositories",
-        "snapshots",
-        "compilation_units",
-        "schema_migrations",
-    ] {
+    for table in ["repositories", "snapshots", "compilation_units"] {
         assert_eq!(actual.remove(table), Some(1), "{table}");
     }
+    // v0.1 schema + v0.5 capabilities migration (schema_migrations 2 rows).
+    assert_eq!(
+        actual.remove("schema_migrations"),
+        Some(2),
+        "schema_migrations"
+    );
     for (table, count) in actual {
         assert_eq!(count, 0, "unexpected rows in {table}");
     }

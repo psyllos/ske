@@ -12,6 +12,9 @@ pub struct BehaviorCaseRowInput {
     pub exit_kind: String,
     /// Rendered result text (e.g. `0, ErrZero`), empty for PANIC.
     pub result: String,
+    /// Ordered structural identities of return expressions, independent of
+    /// display text. Opaque expressions can render alike without being equal.
+    pub return_keys: Vec<String>,
     /// (line, col) of the primary exit span, if any.
     pub span: Option<(u64, u64)>,
     /// Ordered IR-outcome path labels, e.g. `["0/1", "1/0"]` — decision
@@ -84,7 +87,7 @@ pub fn dedup_cases(rows: Vec<BehaviorCaseRowInput>) -> Vec<BehaviorCaseRow> {
         let candidate = BehavGroup::from(input);
         if let Some(existing) = merged.iter_mut().find(|g| {
             g.exit_kind == candidate.exit_kind
-                && g.result == candidate.result
+                && g.return_keys == candidate.return_keys
                 && g.memory_delta == candidate.memory_delta
                 && g.effects == candidate.effects
         }) {
@@ -113,6 +116,7 @@ struct BehavGroup {
     guard: String,
     exit_kind: String,
     result: String,
+    return_keys: Vec<String>,
     span: Option<(u64, u64)>,
     ir_path: Vec<String>,
     memory_delta: String,
@@ -131,6 +135,7 @@ impl BehavGroup {
             guard: input.guard,
             exit_kind: input.exit_kind,
             result: input.result,
+            return_keys: input.return_keys,
             span: input.span,
             ir_path: input.ir_path,
             memory_delta: input.memory_delta,
@@ -148,6 +153,15 @@ impl BehavGroup {
         let right = wrap_disjunct(&other.guard);
         self.guard = format!("{left} OR {right}");
         self.referenced_outcomes.extend(other.referenced_outcomes);
+        let rank = |p: &str| match p {
+            "EXACT" => 0,
+            "OVERAPPROX" => 1,
+            "PARTIAL" => 2,
+            _ => 3,
+        };
+        if rank(&other.precision) > rank(&self.precision) {
+            self.precision = other.precision;
+        }
         self.fingerprint = format!("{}+{}", self.fingerprint, other.fingerprint);
         if self.span.is_none() {
             self.span = other.span;

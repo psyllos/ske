@@ -144,3 +144,18 @@ de validation ; les obligations décrites dans un ADR ne sont pas des PASS.
 Validation : `python3 scripts/validate-v04.py` exécute les 14 AC, incluant
 `summary_matches_concrete` et 200 exécutions CIR concrètes de Sum contre les
 intervalles. Les 96 AC précédents sont rejoués. CI distante non exécutée.
+
+## v0.5 — état intermédiaire, non validé
+
+Les comportements, règles et evidence sont implémentés et ont des tests ciblés,
+mais ne constituent pas encore une livraison conforme de v0.5. Les points
+ouverts du dernier `docs/work-log.md` sont bloquants : canonicalisation et
+invalidation du cache, correspondances ambiguës entre unités, provenance des
+fusions, règles de rendu et hiérarchie scénario/capacité.
+
+La copie de résumés a été renforcée après reproduction de références d'issues
+restées dans le snapshot source et d'une réhydratation sans paramètres.
+Les tests couvrent maintenant les références destination, les rendus A/B et
+l'application d'un callee réutilisé à un appelant nouvellement calculé.
+Ces tests ne certifient pas tous les cas d'effets, de récursion ou de build.
+Le jalon reste PARTIAL ; aucun résultat de la revue indépendante n'est présumé.

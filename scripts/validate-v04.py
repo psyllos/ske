@@ -84,13 +84,18 @@ def main():
           ["summary_persistence_passes_real_cli_db_check"])
     check(13, "cargo test -p ske-query summary_deterministic_and_persisted",
           ["summary_deterministic_and_persisted"])
+    expected_verify = os.environ.get("SKE_EXPECT_VERIFY_VERSION", "v0.4")
+
     def regression(text):
-        assert "VERIFY OK v0.4" in text
+        assert f"VERIFY OK {expected_verify}" in text
         for version, expected in [("v01", 42), ("v02", 25), ("v03", 29)]:
             data = json.loads((ROOT / f"target/validation-{version}/results.json").read_text())
             assert len(data) == expected and all(r["status"] == "PASS" for r in data), version
-    check(14, "./scripts/verify.sh && SKE_EXPECT_VERIFY_VERSION=v0.4 python3 scripts/validate-v03.py",
-          validator=regression)
+    check(
+        14,
+        f"./scripts/verify.sh && SKE_EXPECT_VERIFY_VERSION={expected_verify} python3 scripts/validate-v03.py",
+        validator=regression,
+    )
     rows = ["# Validation v0.4", "", "Commandes exécutées par `python3 scripts/validate-v04.py`.",
             "Logs complets locaux : `target/validation-v04/AC-0.4-*.log` et `paths-cli.log`.", "",
             "| AC | Statut | Commande exécutée |", "|---|---|---|"]
