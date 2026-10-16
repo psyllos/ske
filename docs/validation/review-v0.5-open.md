@@ -25,7 +25,7 @@ déclarée validée par l'exécution réelle de `python3 scripts/validate-v05.py
 ## Preuves exécutées (validation finale v0.5)
 
 - `python3 scripts/validate-v05.py` (sans `--only`), `SKE_EXPECT_VERIFY_VERSION=v0.5` : **13/13 AC PASS**, exit 0.
-- AC-0.5-12 rejoue `./scripts/verify.sh` (fmt, clippy `-D warnings`, check-deps, gen-proto, build `-D warnings`, db check 50 tables/21 triggers, fixtures, compteurs, Go vet/test/build, ingest go, db check, `cargo test --workspace`, `validate-v03.py --verify-cases`, snapshots) puis `validate-v04.py` : **14/14 AC PASS**, et en cascade v0.3 (29), v0.2 (25), v0.1 (42) — tous PASS. Voir `target/validation-v0*/results.json`.
+- AC-0.5-12 rejoue `./scripts/verify.sh` (fmt, clippy `-D warnings`, check-deps, gen-proto, build `-D warnings`, db check 50 tables/21 triggers, fixtures, compteurs, Go vet/test/build, ingest go, db check, `cargo test --workspace`, `validate-v03.py --verify-cases`, snapshots) une seule fois puis `validate-v04.py` en mode `SKE_INHERIT_VERIFY=1` : **14/14 AC PASS**, et en cascade v0.3 (29), v0.2 (25), v0.1 (42) — tous PASS, verify.sh exécuté une seule fois pour toute la chaîne. Voir `target/validation-v0*/results.json`.
 - Tests v0.5 : ske-behavior 12 + ske-cli behavior 14 + ske-query 16 (incl. `structural_fingerprint_...` et `reused_field_hydration_preserves_nonzero_index`), aucun ignoré.
 - Logs complets : `target/validation-v05/AC-0.5-*.log`.
 

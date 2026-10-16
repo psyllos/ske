@@ -100,7 +100,7 @@ def main():
             data = json.loads((ROOT / f"target/validation-{version}/results.json").read_text())
             assert len(data) == expected and all(r["status"] == "PASS" for r in data), version
 
-    check(12, "./scripts/verify.sh && SKE_EXPECT_VERIFY_VERSION=v0.5 python3 scripts/validate-v04.py",
+    check(12, "./scripts/verify.sh && SKE_INHERIT_VERIFY=1 SKE_EXPECT_VERIFY_VERSION=v0.5 python3 scripts/validate-v04.py",
           validator=regression)
     invocation = "python3 scripts/validate-v05.py" + (f" --only {args.only}" if args.only else "")
     rows = ["# Validation v0.5 — en cours", "", f"Invocation : `{invocation}`.",

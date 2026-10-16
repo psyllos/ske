@@ -909,3 +909,52 @@ STALE ; pas de graphe de dépendances multi-snapshot exploité au-delà de
 Prochaines étapes : checkpoint Git local (commit) de l'état validé, puis
 v0.5 suivante sur demande explicite ; ne pas recommencer v0.1–v0.4.
 
+## Optimisation verify.sh reprise (SKE_INHERIT_VERIFY) [L911-960]
+
+Demande du commanditaire : reprendre les optimisations faites en rapport
+avec `verify.sh` puis faire un land. L'optimisation « Allow nested validators
+to inherit the enclosing verify.sh evidence » (`4b95e7f`, ligne parallèle)
+était absente de notre branche : la chaîne imbriquée de validation exécutait
+`./scripts/verify.sh` cinq fois (une par jalon, AC-0.5-12 puis AC-0.4-14 puis
+AC-0.3-24 puis AC-0.2-22 puis AC-0.1-40).
+
+Porter sur notre branche (scripts adaptés : streaming `execute()`, `--only`,
+`SKE_EXPECT_VERIFY_VERSION` présent) :
+
+- `validate-v01.py` AC-0.1-40 : si `SKE_INHERIT_VERIFY=1`, enregistre
+  « PASS inherited » au lieu de relancer verify.sh.
+- `validate-v02.py` AC-0.2-22 : idem ; AC-0.2-23 propage le flag.
+- `validate-v03.py` AC-0.3-24 : idem ; AC-0.3-25 propage le flag.
+- `validate-v04.py` AC-0.4-14 : si le flag est déjà posé par le niveau
+  supérieur (v0.5), hérite sans relancer verify.sh et propage ; sinon
+  (exécution autonome) lance verify.sh une fois et pose le flag pour v0.3+.
+- `validate-v05.py` AC-0.5-12 : lance verify.sh une fois (sommet de chaîne)
+  puis pose SKE_INHERIT_VERIFY=1 pour v0.4+. Le validateur AC-0.5-12 exige
+  toujours le marqueur `VERIFY OK v0.5` du run unique.
+- Exécutions autonomes sans le flag inchangées : verify.sh relancé pour de
+  vrai, aucun amincissement de preuve.
+- `.gitignore` : ajout de `__pycache__/` et `*.pyc` (artefacts de
+  `python3 -m py_compile`).
+
+### Re-validation exécutée (harnais optimisé)
+
+```
+rm -rf target/validation-v0*
+SKE_EXPECT_VERIFY_VERSION=v0.5 python3 scripts/validate-v05.py
+```
+
+Exit 0, **9 min 59 s** (au lieu de plusieurs dizaines de minutes précédemment).
+- v0.1 : 42/42 PASS, v0.2 : 25/25, v0.3 : 29/29, v0.4 : 14/14, v0.5 : 13/13.
+- `VERIFY OK v0.5` : **exactement 1 occurrence** dans AC-0.5-12.log (chaîne
+  complète 5 → 1 exécution de verify.sh).
+- AC-0.1-40, AC-0.2-22, AC-0.3-24 : `PASS` avec commande « verify.sh
+  (inherited from enclosing run) », 0 s. AC-0.4-14 : PASS en mode hérité.
+- Les rapport régénérés `docs/validation/v0.3.md`, `v0.4.md`, `v0.5.md`
+  reflètent le mode hérité ; `v0.5.md` re-marqué « validée » à la main
+  (le script régénère l'en-tête « en cours » par défaut).
+- Vérifications de syntaxe : `python3 -m py_compile` sur les cinq scripts OK.
+
+Prochaine étape : commit local du port + re-validation, puis land vers la
+destination pactisée (branche publiée puis main). Aucun push/merge partagé
+avant autorisation explicite de cette étape de land.
+
