@@ -423,6 +423,24 @@ puis intégrer le moteur des résumés.
   (`ske-symbolic/src/summary.rs` + extension `analyze_with_summaries` +
   crate `ske-summary`).
 
+### Relance B' et C' (premiers lots B/C terminés sans code)
+
+Les premiers lots B (interpréteur concret) et C (paths explore) se sont
+terminés `completed` sans fichier écrit : leurs transcripts s'arrêtent à la
+phase de conception et `merge_worktrees` ne rapporte aucun changement
+(« No unmerged changes » — versions vides `80edb218…610701`). La conception
+était bonne mais n'a pas été transcrite. Relance avec des prompts
+« design-complet » pour écrire directement le code :
+
+- B′ interpréteur concret :
+  `ksQQ9uo16AT0RrqL7JdWZgoH9ZLOAAz_-pIBxBDZiRjivQ9OQqTS_tRBC-14`
+- C′ paths explore + callgraph :
+  `ksQQ9uo16AT0RrqL7JdWZgoH9ZLOAA0AAZIBxBDZiRjivQ9OQqTS_tRBC-14`
+
+Leçon : les prompts longs de conception encouragent l'exploration ; pour les
+reprises, figer la conception dans le prompt et demander l'écriture immédiate.
+A et D sont toujours en cours (status agent-spawned). Aucun AC v0.4 PASS.
+
 Coordinateur : intégration du moteur des résumés (T-0.4-02/03/04), mode
 intervalles dans le moteur, `ske-summary`, persistance summary_* dans
 ske-query, tests AC, `verify.sh`, validation. Fusion des lots via
