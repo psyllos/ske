@@ -441,6 +441,12 @@ Leçon : les prompts longs de conception encouragent l'exploration ; pour les
 reprises, figer la conception dans le prompt et demander l'écriture immédiate.
 A et D sont toujours en cours (status agent-spawned). Aucun AC v0.4 PASS.
 
+Fusion du premier lot B vérifiée vide : `merge_worktrees` avec la version
+capturée `80edb218…610701` n'a apporté aucun fichier (pas de `concrete.rs`,
+pas de diff). Les « unpushed deltas » du status sont des deltas de
+conversation, pas du code. Confirme : le lot B initial n'a produit aucun
+code — la relance B′ était nécessaire.
+
 Coordinateur : intégration du moteur des résumés (T-0.4-02/03/04), mode
 intervalles dans le moteur, `ske-summary`, persistance summary_* dans
 ske-query, tests AC, `verify.sh`, validation. Fusion des lots via
