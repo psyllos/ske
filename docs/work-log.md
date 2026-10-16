@@ -350,3 +350,22 @@ Rapport avec les commandes et logs :
 `docs/validation/v0.3.md` + `target/validation-v03/`.
 Pas de commit, push, merge partagé ni changement de tag. Prochain jalon : v0.4,
 non commencé. CI distante non exécutée.
+
+## Correction de l'échec GitHub Actions — adaptateur Linux
+
+Demande : vérifier et corriger le workflow distant. Worktree repris propre
+sur `main` / `8004d2f`. Les logs des runs `38878648861` (main) et
+`38900342322` (ske/implementation, v0.4 distant) montrent le même échec
+Ubuntu : le test mémoire reçoit `E_RECORD_ORDER` plutôt que `E_ADAPTER_LIMIT`.
+
+Cause : EOF remonté avant vérification de la sortie non nulle de l'adaptateur
+(allocation refusée sous `prlimit` Linux). Correction dans le lanceur :
+après EOF, attendre le statut sous watchdog avant classification ; garder
+le rejet immédiat des autres erreurs de trame. Trois régressions ajoutées,
+dont une reproduite rouge avant le correctif.
+
+Validation macOS : fmt, Clippy strict, 33 tests ske-ingest, workspace
+`--locked` et `./scripts/verify.sh` PASS (`VERIFY OK v0.3`). Aucun test ignoré.
+Rapport : `docs/validation/ci-adapter-exit.md` ; logs locaux :
+`target/validation-ci/`. Linux corrigé et CI distante à confirmer après
+publication autorisée. Aucun push/merge, aucun changement v0.4 récupéré.
