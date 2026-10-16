@@ -123,51 +123,117 @@ impl Z3Solver {
                     }
                 }
             };
-            // `native` runs the whole native section (parse, parameters, check).
-            // When the engine is cancellable, the SMT-LIB text is fed in bounded
-            // chunks so a SIGINT landing mid-parse is serviced promptly. Z3's
-            // SMT-LIB parser is neither interruptible nor bounded by the solver's
-            // timeout parameters, and the engine's text grows with each loop
-            // unrolling; a single from_string over a large input could otherwise
-            // swallow the cancel flag for seconds to minutes. Each line is one
-            // complete command (guaranteed by crate::encode and by this crate's
-            // tests), so splitting at line boundaries never feeds a partial
-            // command.
+            // Old Z3 versions do not retain declarations between from_string
+            // calls. Parse batches in fresh temporary solvers, replaying the
+            // declaration/definition prelude, then copy their assertions into
+            // the result solver. Never depend on parser state across calls.
+            // This bounds assertion batches, not an individual command or the
+            // prelude. Other SMT-LIB scripts retain the single-parse path.
             const FEED_CHUNK_LINES: usize = 16_384;
             let native = |cancel: Option<&(dyn Fn() -> bool + Sync)>,
                           deadline: Option<Instant>|
              -> Result<SatResult, CheckResult> {
                 match cancel {
                     Some(cancel) => {
-                        let mut chunk = String::new();
-                        let mut fed = 0usize;
-                        for line in query.smtlib.split('\n') {
-                            if line.trim().is_empty() {
-                                continue;
-                            }
+                        let mut lines = 0usize;
+                        let mut chunkable = true;
+                        let mut seen_assertion = false;
+                        for line in query.smtlib.lines() {
                             if cancel() || deadline.is_some_and(|d| Instant::now() >= d) {
-                                // Stop feeding rather than checking a partial
-                                // assertion set; the caller's cancellation
-                                // handling takes over from here.
                                 return Err(unknown("interrupted"));
                             }
-                            chunk.push_str(line);
-                            chunk.push('\n');
-                            fed += 1;
-                            if fed >= FEED_CHUNK_LINES {
-                                solver.from_string(chunk.as_bytes());
-                                if let Some(e) = native_error() {
-                                    return Err(unknown(format!("SOLVER_UNAVAILABLE: {e}")));
+                            lines += 1;
+                            let line = line.trim();
+                            // The SKE encoder emits complete, unquoted commands
+                            // on each line. Fall back for comments, strings,
+                            // multiline terms, or stateful commands (push/pop).
+                            let mut depth = 0i64;
+                            let mut commands = 0usize;
+                            let balanced = line.bytes().all(|byte| {
+                                match byte {
+                                    b'(' => {
+                                        if depth == 0 {
+                                            commands += 1;
+                                        }
+                                        depth += 1;
+                                    }
+                                    b')' => depth -= 1,
+                                    _ => {}
                                 }
-                                chunk.clear();
-                                fed = 0;
+                                depth >= 0
+                            }) && depth == 0;
+                            if line.starts_with("(assert ") {
+                                seen_assertion = true;
+                            } else if seen_assertion && !line.is_empty() && line != "(check-sat)" {
+                                // Replaying a later declaration before earlier
+                                // assertions could accept an invalid forward
+                                // reference. Preserve command order instead.
+                                chunkable = false;
                             }
+                            chunkable &= balanced
+                                && (line.is_empty() || commands == 1)
+                                && !line.contains(['"', '|', ';'])
+                                && (line.is_empty()
+                                    || line.starts_with("(declare-")
+                                    || line.starts_with("(define-fun ")
+                                    || line.starts_with("(set-logic ")
+                                    || line == "(set-option :produce-models true)"
+                                    || line.starts_with("(assert ")
+                                    || line == "(check-sat)");
                         }
-                        if fed != 0 {
-                            solver.from_string(chunk.as_bytes());
+                        if lines <= FEED_CHUNK_LINES || !chunkable {
+                            solver.from_string(query.smtlib.as_bytes());
                             if let Some(e) = native_error() {
                                 return Err(unknown(format!("SOLVER_UNAVAILABLE: {e}")));
                             }
+                        } else {
+                            let mut prelude = String::new();
+                            let mut chunk = String::new();
+                            let mut fed = 0usize;
+                            let parse_batch =
+                                |prelude: &str, assertions: &str| -> Result<(), CheckResult> {
+                                    let parsed = z3::Solver::new();
+                                    parsed.from_string(format!("{prelude}{assertions}").as_bytes());
+                                    if let Some(e) = native_error() {
+                                        return Err(unknown(format!("SOLVER_UNAVAILABLE: {e}")));
+                                    }
+                                    for assertion in parsed.get_assertions() {
+                                        if cancel() || deadline.is_some_and(|d| Instant::now() >= d)
+                                        {
+                                            return Err(unknown("interrupted"));
+                                        }
+                                        solver.assert(assertion);
+                                    }
+                                    Ok(())
+                                };
+                            for line in query.smtlib.split('\n') {
+                                let line = line.trim();
+                                if line.is_empty() || line == "(check-sat)" {
+                                    continue;
+                                }
+                                if cancel() || deadline.is_some_and(|d| Instant::now() >= d) {
+                                    // Stop feeding rather than checking a partial
+                                    // assertion set; the caller's cancellation
+                                    // handling takes over from here.
+                                    return Err(unknown("interrupted"));
+                                }
+                                if !line.starts_with("(assert ") {
+                                    prelude.push_str(line);
+                                    prelude.push('\n');
+                                    continue;
+                                }
+                                chunk.push_str(line);
+                                chunk.push('\n');
+                                fed += 1;
+                                if fed >= FEED_CHUNK_LINES {
+                                    parse_batch(&prelude, &chunk)?;
+                                    chunk.clear();
+                                    fed = 0;
+                                }
+                            }
+                            // Also validate a declaration-only script or a
+                            // prelude changed after the last full batch.
+                            parse_batch(&prelude, &chunk)?;
                         }
                     }
                     None => {

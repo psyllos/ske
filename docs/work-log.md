@@ -786,3 +786,24 @@ de protocole immédiate ; après EOF, la sortie du processus est attendue sous
 surveillance des limites existantes. Les régressions des deux branches sont
 conservées. Les deux sections concurrentes du journal sont conservées.
 Validation locale complète puis CI Linux/macOS requises avant avance de main.
+
+### Portabilité du parsing révélée par la CI du candidat
+
+Le candidat `067d28d` passe le test CLI SIGINT sur Linux, mais le run
+`38936050127` échoue sur la nouvelle régression
+`chunked_parsing_preserves_declarations_and_assertions` : le Z3 Linux ne
+conserve pas les déclarations entre appels `from_string`, contrairement au
+Z3 local. Ce test n'est ni ignoré ni affaibli.
+
+Correction : parser chaque lot dans un solveur temporaire neuf, en rejouant
+le préambule déclaratif, puis transférer ses assertions au solveur résultat.
+Aucune dépendance à un état de parseur conservé entre appels. Les scripts
+multilignes, avec commandes d'état ou déclarations intercalées, restent parsés
+en un seul appel pour conserver leur ordre et leur sémantique.
+Limite explicite : les lots bornent les assertions, pas le coût d'une commande
+individuelle ni du préambule (rejoué pour chaque lot).
+
+Tests locaux solveur : 14 PASS, dont définitions entre lots, termes multilignes
+et push/pop ; Clippy strict workspace et formatage PASS avant publication.
+La validation complète interrompue n'a pas donné de résultat final AC-0.4-14 ;
+elle doit être rejouée sur ce correctif. Main toujours inchangée.

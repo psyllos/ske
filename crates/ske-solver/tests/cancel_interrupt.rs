@@ -25,6 +25,40 @@ fn chunked_parsing_preserves_declarations_and_assertions() {
     );
 }
 
+#[test]
+fn large_scripts_preserve_definitions_multiline_terms_and_push_pop() {
+    for (prefix, suffix) in [
+        (
+            "(declare-const x Int)\n(define-fun y () Int (+ x 1))\n(assert (= x 1))\n",
+            "(assert (= y 3))\n",
+        ),
+        (
+            "(declare-const x Int)\n(assert\n (= x 1))\n",
+            "(assert (= x 2))\n",
+        ),
+        (
+            "(declare-const x Int)\n(push 1)\n(assert (= x 1))\n",
+            "(pop 1)\n(assert (= x 2))\n(assert (= x 3))\n",
+        ),
+    ] {
+        let text = format!("{prefix}{}{suffix}", "(assert true)\n".repeat(17_000));
+        let query = ske_solver::Query {
+            smtlib: text,
+            variables: vec![],
+        };
+        let budget = SolverBudget {
+            rlimit: 5_000_000,
+            wall_timeout_ms: 0,
+            seed: 0,
+        };
+        assert_eq!(Z3Solver::new().check(&query, &budget), CheckResult::Unsat);
+        assert_eq!(
+            Z3Solver::new().check_interruptible(&query, &budget, &|| false),
+            CheckResult::Unsat
+        );
+    }
+}
+
 fn hard_smt() -> String {
     let mut s = String::from("(set-logic ALL)\n(declare-fun x () (_ BitVec 64))\n");
     for i in 0..200 {
