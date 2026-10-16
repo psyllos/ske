@@ -834,8 +834,15 @@ qui rappelle verify.sh puis v0.2, qui rappelle verify.sh puis v0.1,
 qui rappelle verify.sh. Quatre workflows complets, plus les AC spécifiques,
 avec sortie capturée à chaque niveau. À améliorer séparément par orchestration
 unique et preuves communes explicites, jamais par réutilisation silencieuse
-de vieux rapports. Les tests adaptateur sensibles à la contention restent
-également un suivi distinct.
+de vieux rapports.
+
+**Limite « tests adaptateur sensibles à la contention » : traitée.** Correctif
+`adapter_ipc.rs` (voir `BLOCKED-v0.4-land-ci.md`) : bornes de retour portées à
+10 s pour les deux tests « ne doit pas attendre le sleep 30 », écriture du PID
+descendant déterministe avant le sleep et lecture à retard borné, assertion
+`/bin/ps` conservée. Un essai de sérialisation par mutex du module a été
+retiré (interblocage sur les tests créant deux fixtures vivantes). Vérifié :
+5/5 exécutions en parallélisme par défaut sous charge, workspace complet vert.
 
 Landing `/land` autorisé : rapports consolidés puis avance rapide de main
 uniquement après CI verte du candidat final. Aucun changement normatif,
