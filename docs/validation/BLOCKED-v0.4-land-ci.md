@@ -54,3 +54,33 @@ mémoire déjà arrivé sur main avant une prochaine tentative.
 Prochaine action : diagnostiquer et corriger l'annulation SIGINT avec des
 preuves de régression, relancer la CI Linux/macOS et la validation locale,
 puis reprendre le landing seulement après validation.
+
+## Résolution — parse SMT-LIB non interruptible (date de la reprise)
+
+Racine du blocage : `Z3_solver_from_string` (parse SMT-LIB) n'est ni
+interruptible par `ContextHandle::interrupt()` ni borné par les paramètres
+`timeout`/`rlimit`, qui ne s'appliquent qu'au `check`. Le texte SMT croît à
+chaque déroulage de boucle ; sur un runner lent, un seul parse peut dépasser
+45–120 s sans consulter le drapeau `cancelled` ni être interrompu. Vérifié
+expérimentalement : pendant un parse de 1,5 M d'assertions (~6 s), répéter
+l'interruption ne l'abrège pas (6,13 s).
+
+Correctif dans `crates/ske-solver/src/backend.rs` : le parse est alimenté par
+lots de lignes (`FEED_CHUNK_LINES = 16_384`, une ligne = une commande, format
+garanti par `crate::encode`), avec contrôle de `cancelled()` et de l'échéance
+`deadline` entre lots ; le watchdog existant continue d'interrompre le `check`
+en ré-acerbant jusqu'au retour. L'annulation couvre ainsi tout le parcours
+natif (parse + set_params + check) au lieu de seulement `check`.
+
+Régression démontrée `cancellation_interrupts_long_parse`
+(`crates/ske-solver/tests/cancel_interrupt.rs`) : annulation 50 ms après le
+début d'un parse de ~6 s. Avant correctif FAIL (≈6,28 s), après correctif PASS
+(≈73 ms). `cancel_interrupts_solver_promptly`, `cancel_sigint` et les 9 tests
+`solver` passent. `cargo test --workspace` : 66 lots ok, aucun échec. Clippy
+dur et `fmt --check` verts. Relance `python3 scripts/validate-v04.py` :
+AC-0.4-01..14 PASS, y compris AC-0.4-14 (`./scripts/verify.sh &&
+validate-v03.py`) et la non-régression v0.2 (AC-0.2-22 à nouveau PASS).
+
+Restent, pour le landing : CI distante verte sur `origin/ske/implementation`,
+puis réconciliation avec `main` (`d160ad3` vs `9106713` pour la priorité
+d'erreurs adaptateur) avant d'avancer la branche partagée.

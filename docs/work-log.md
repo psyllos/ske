@@ -688,3 +688,35 @@ Il faut corriger/valider l'annulation et réconcilier main avant de retenter
 le landing. Les annonces précédentes de validation locale restent historiques,
 pas une attestation de CI verte actuelle.
 
+## Résolution annulation SIGINT — parse SMT-LIB alimenté en lots bornés
+
+Racine (confirmée par l'expérience) : `Z3_solver_from_string` n'est pas
+interruptible et n'est pas borné par `timeout`/`rlimit` (qui ne valent que
+pour `check`). Le texte SMT croît à chaque déroulage de boucle ; un parse
+géant peut occuper >45 s sans consulter `cancelled`. L'ancien watchdog
+(thread `thread::scope` + `handle.interrupt()`) n'entourait que `solver.check()`.
+Étendre ce garde à `from_string` ne suffit pas : répéter `interrupt()` pendant
+un parse de 1,5 M d'assertions ne l'abrège pas (6,13 s).
+
+Correctif `crates/ske-solver/src/backend.rs` : quand l'appel est annulable, le
+texte SMT-LIB est envoyé à Z3 par lots de 16 384 lignes (une ligne = une
+commande complète, invariant de `crate::encode`), en vérifiant `cancelled()` et
+l'échéance entre lots ; un abandon en cours de parse renvoie
+`Unknown { reason: "interrupted" }` sans `check` d'un jeu partiel. Le watchdog
+garde le `check` interruptible, en ré-acerbant l'interruption jusqu'au retour
+(pas une seule interruption perdue avant le démarrage du check).
+
+Régression `cancellation_interrupts_long_parse` (1,5 M d'assertions, annulation
+50 ms après le début du parse) : FAIL réel avant correctif (~6,28 s), PASS après
+(~73 ms). `cancel_interrupts_solver_promptly` inchangé PASS ; `cancel_sigint`
+PASS ; 9 tests solver PASS.
+
+Exécutions : `cargo test --workspace` 66 lots ok sans échec ; clippy
+`--workspace --all-targets -D warnings` vert ; `cargo fmt --check` vert ;
+`python3 scripts/validate-v04.py` AC-0.4-01..14 PASS, AC-0.2-22 re-PASS,
+AC-0.4-14 (`verify.sh && validate-v03.py`) PASS. `docs/validation/v0.4.md` et
+`v0.3.md` régénérés par le script validateur.
+
+En attente pour le landing : CI distante verte sur la branche publiée, puis
+réconciliation du correctif adaptateur avec `main` (`d160ad3` vs `9106713`)
+

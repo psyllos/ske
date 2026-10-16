@@ -43,3 +43,45 @@ fn cancel_interrupts_solver_promptly() {
         other => panic!("expected interrupt/unknown, got {other:?}"),
     }
 }
+
+// The watchdog must cover the whole native call, not only solver.check():
+// parsing a large SMT-LIB input is neither interruptible nor bounded by Z3's
+// own timeout, and the engine's SMT text grows with each loop unrolling. A
+// SIGINT arriving during that parse previously left the analyzer unresponsive
+// until the parse finished on its own (here ~6s for 1.5M assertions).
+#[test]
+fn cancellation_interrupts_long_parse() {
+    let mut smt = String::from("(set-logic ALL)\n(declare-fun x () (_ BitVec 64))\n");
+    for i in 0..1_500_000 {
+        smt.push_str(&format!("(assert (= (bvadd x (_ bv{} 64)) x))\n", i % 16));
+    }
+    smt.push_str("(check-sat)\n");
+    let mut solver = Z3Solver::new();
+    let started = Instant::now();
+    // Cancel 50ms in: parsing has begun but still has seconds to go on the
+    // uncancelled path. A prompt return proves the parser itself was aborted
+    // rather than its check afterwards.
+    let cancelled = || started.elapsed() >= std::time::Duration::from_millis(50);
+    let result = solver.check_interruptible(
+        &ske_solver::Query {
+            smtlib: smt,
+            variables: vec![],
+        },
+        &SolverBudget {
+            rlimit: 5_000_000,
+            wall_timeout_ms: 0,
+            seed: 0,
+        },
+        &cancelled,
+    );
+    let elapsed = started.elapsed();
+    println!("result={result:?} elapsed={elapsed:?}");
+    assert!(
+        elapsed.as_secs() < 5,
+        "cancellation must not wait for the parser: {elapsed:?}"
+    );
+    match result {
+        CheckResult::Unknown { .. } | CheckResult::Timeout { .. } => {}
+        other => panic!("expected interrupt/unknown, got {other:?}"),
+    }
+}
