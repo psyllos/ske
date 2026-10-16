@@ -1,0 +1,14 @@
+[package]
+name = "ske-behavior"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+ske-common.workspace = true
+ske-cir.workspace = true
+ske-graph.workspace = true
+ske-symbolic = { path = "../ske-symbolic" }
+serde_json.workspace = true
+
+[dev-dependencies]
+ske-common.workspace = true
