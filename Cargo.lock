@@ -823,6 +823,7 @@ dependencies = [
 name = "ske-solver"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "sha2",
  "ske-cir",
  "z3",

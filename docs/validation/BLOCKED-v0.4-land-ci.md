@@ -1,5 +1,35 @@
 # BLOCKED — landing v0.4 : annulation SIGINT
 
+## Diagnostic ciblé : propriété du gestionnaire SIGINT
+
+Z3 installe par défaut son propre gestionnaire SIGINT pendant `check`
+(`ctrl_c=true`, `api_solver.cpp` / `scoped_ctrl_c`). Le signal interrompt
+alors Z3 sans positionner le drapeau d'annulation de SKE.
+
+Régression `solving_preserves_application_sigint_handler` : un vrai solveur
+sur pigeonhole reste actif pendant 200 ms ; le watchdog observe la disposition
+SIGINT via `sigaction`, sans la modifier ni envoyer de signal au processus.
+FAIL réel avant correctif : « Z3 replaced the application's SIGINT handler
+during solving ». PASS après `params.set_bool("ctrl_c", false)`.
+Les 12 tests ske-solver passent ; le test CLI existant passe 3/3, sans
+modification d'assertion ni de délai. Clippy strict workspace passe.
+
+Ce correctif est local, non publié. La CI Linux/macOS reste à relancer ;
+le landing reste bloqué jusqu'à sa validation.
+
+## Rectification après la CI de `2b22558`
+
+Le run https://github.com/psyllos/ske/actions/runs/38923701495 échoue encore
+sur `cancel_sigint_preserves_streamed_arrivals` après 120 s sous Linux ;
+macOS est annulé. La section « Résolution » ci-dessous décrit une tentative
+locale, **pas une résolution du blocage CLI**. Les validations locales restent
+historiques ; aucun landing sur main n'a été effectué.
+
+Les reproductions manuelles précédentes ont produit des observations
+contradictoires et ne suffisent pas à attribuer une cause. Ne pas conclure
+à un défaut de `thread::scope`, de livraison des signaux ou de persistance
+sans un test ciblé. Le probe temporaire dépendant de `/tmp` a été retiré.
+
 ## État vérifié
 
 - Landing demandé explicitement par `/land`.

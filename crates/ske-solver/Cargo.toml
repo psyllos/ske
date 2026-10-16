@@ -10,3 +10,4 @@ sha2.workspace = true
 
 [dev-dependencies]
 ske-cir.workspace = true
+libc = "=0.2.190"

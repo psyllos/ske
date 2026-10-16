@@ -720,3 +720,32 @@ AC-0.4-14 (`verify.sh && validate-v03.py`) PASS. `docs/validation/v0.4.md` et
 En attente pour le landing : CI distante verte sur la branche publiée, puis
 réconciliation du correctif adaptateur avec `main` (`d160ad3` vs `9106713`)
 
+## Reprise en main — rectification de l'état SIGINT
+
+La CI de `2b22558` (run `38923701495`) échoue toujours sur
+`cancel_sigint_preserves_streamed_arrivals` sous Linux après 120 s ;
+macOS est annulé. L'annonce de résolution ci-dessus était prématurée :
+la régression de parsing ne prouve pas la résolution du blocage CLI.
+Aucun landing sur main n'a été effectué.
+
+Le probe temporaire `cancel_probe.rs`, dépendant de fichiers `/tmp`, est
+retiré. Les reproductions précédentes et les captures contradictoires ne
+justifient pas une attribution définitive à Z3, aux signaux, à la persistance
+ou à `thread::scope`. Prochaine étape : un diagnostic ciblé de la disposition
+SIGINT et du drapeau d'annulation pendant un appel Z3, sans nouvelle campagne
+de charge ni publication avant preuve.
+
+### Preuve ciblée obtenue : Z3 remplace le gestionnaire SIGINT
+
+Le test `solving_preserves_application_sigint_handler` observe la disposition
+SIGINT pendant un vrai `check` de pigeonhole : FAIL avant correctif, PASS après
+désactivation du paramètre Z3 `ctrl_c`. Z3 ne doit pas consommer le signal à
+la place de signal-hook, sinon le drapeau SKE reste faux et l'exploration
+continue. Le watchdog reste responsable de l'interruption native.
+
+Exécuté : `cargo test -p ske-solver` (12 tests PASS),
+`cargo test -p ske-cli --test cancel_sigint` (3 exécutions PASS),
+`cargo clippy --workspace --all-targets -- -D warnings` (PASS).
+Le formatage du nouveau test a été corrigé après fmt --check.
+Changements locaux non publiés ; CI distante et landing toujours en attente.
+

@@ -13,7 +13,7 @@ Ne pas commencer v0.2 avant les 42 AC v0.1 PASS ou dérogation approuvée.
 | v0.1 — CIR, SQLite, import, navigation | DONE | 42 AC PASS après revue et intégration ; voir validation/v0.1.md |
 | v0.2 — Go | DONE | 25 AC PASS après correction des six défauts de revue ; 42 AC v0.1 toujours PASS |
 | v0.3 — analyse symbolique et preuves | DONE | 29 AC PASS ; non-régression 42 AC v0.1 + 25 AC v0.2 ; voir validation/v0.3.md et le dernier journal |
-| v0.4 — analyse interprocédurale | DONE (validé) | 14 AC PASS (relance validate-v04.py) ; défaut d'annulation SIGINT corrigé avec régression démontrée : parse SMT-LIB non interruptible rendu bornable par alimentation en lots ; non-régression 96 AC v0.1–v0.3 ; voir validation/v0.4.md et le dernier journal |
+| v0.4 — analyse interprocédurale | LOCAL_PASS / LAND_BLOCKED | 14 AC PASS locaux ; CI de 2b22558 toujours en échec SIGINT (38923701495). La régression de parsing ne démontre pas la résolution CLI ; voir validation/BLOCKED-v0.4-land-ci.md |
 | v0.5–v0.7 | NOT_STARTED | Hors périmètre v0.4 |
 
 ## Fonctionnalités §1.1

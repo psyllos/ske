@@ -181,6 +181,10 @@ impl Z3Solver {
                 params.set_u32("random_seed", budget.seed);
                 params.set_u32("rlimit", rlimit);
                 params.set_u32("timeout", timeout);
+                // SKE owns SIGINT through signal-hook. Z3's default ctrl_c
+                // handler consumes SIGINT during check without setting SKE's
+                // cancellation flag. The watchdog handles native interruption.
+                params.set_bool("ctrl_c", false);
                 // Apply after parsing so persisted set-options cannot override budget.
                 solver.set_params(&params);
                 if let Some(e) = native_error() {

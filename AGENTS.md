@@ -23,12 +23,11 @@ après v0.1 → v0.2 → v0.3, avec délégation et état durable.
   Voir `docs/validation/v0.3.md` et le dernier journal.
 - v0.4 : validée, 14 AC PASS ; non-régression 42 AC v0.1 + 25 AC v0.2 +
   29 AC v0.3. Voir `docs/validation/v0.4.md` et la dernière section du journal.
-  Le défaut d'annulation SIGINT qui bloquait le landing est corrigé avec une
-  régression démontrée (`cancellation_interrupts_long_parse`) : parse SMT-LIB
-  non interruptible rendu bornable par alimentation en lots. Relance locale
-  `validate-v04.py` : 14/14 PASS. En attente : CI distante verte puis
-  réconciliation du correctif adaptateur avec `main` avant avancement de la
-  branche partagée.
+  Landing toujours bloqué : la CI de `2b22558` échoue encore sur
+  `cancel_sigint_preserves_streamed_arrivals` (run `38923701495`, Linux ;
+  macOS annulé). Le test de parsing passe mais ne démontre pas la résolution
+  du défaut CLI. Les 14/14 PASS locaux ne valent pas CI verte.
+  Lire la dernière section de `docs/validation/BLOCKED-v0.4-land-ci.md`.
 
 Reprise après v0.4 :
 
