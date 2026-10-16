@@ -8,6 +8,7 @@ edition = "2021"
 
 [workspace.dependencies]
 ske-common = { path = "crates/ske-common" }
+ske-abstract = { path = "crates/ske-abstract" }
 ske-cir = { path = "crates/ske-cir" }
 ske-graph = { path = "crates/ske-graph" }
 ske-storage = { path = "crates/ske-storage" }

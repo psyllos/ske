@@ -740,6 +740,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "ske-abstract"
+version = "0.1.0"
+
+[[package]]
 name = "ske-cir"
 version = "0.1.0"
 dependencies = [
