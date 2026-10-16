@@ -665,3 +665,26 @@ Après correction, `cargo test -p ske-ingest --test adapter_ipc` :
 
 Main reste inchangée en attendant une CI verte sur ce correctif.
 
+### Landing bloqué — état final de cette tentative
+
+CI du correctif mémoire `9106713` :
+https://github.com/psyllos/ske/actions/runs/38901291552 — FAIL sur
+`cancel_sigint_preserves_streamed_arrivals`, le défaut mémoire Linux étant
+passé. Ce même blocage SIGINT est reproduit par la régression locale
+imbriquée : AC-0.2-22, puis AC-0.3-25 et AC-0.4-14 FAIL.
+
+Un essai sur le garde d'interruption Z3 a passé ses tests ciblés mais la
+validation complète suivante a dépassé 1 000 000 ms. Essai retiré, pas
+publié ni présenté comme correction. Aucun processus de validation de cette
+tentative ne reste actif selon la vérification pgrep finale.
+
+Pendant cette tentative, main a avancé indépendamment à `02df44f`, après
+`d160ad3` (correctif de sortie adaptateur). Le checkpoint v0.4 n'y est pas
+présent selon la vérification d'ascendance. Cet agent n'a pas modifié main,
+n'a pas forcé de push et ne doit pas écraser le correctif arrivé en parallèle.
+
+Rapport durable : `docs/validation/BLOCKED-v0.4-land-ci.md`.
+Il faut corriger/valider l'annulation et réconcilier main avant de retenter
+le landing. Les annonces précédentes de validation locale restent historiques,
+pas une attestation de CI verte actuelle.
+
