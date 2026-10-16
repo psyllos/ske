@@ -13,7 +13,8 @@ Ne pas commencer v0.2 avant les 42 AC v0.1 PASS ou dérogation approuvée.
 | v0.1 — CIR, SQLite, import, navigation | DONE | 42 AC PASS après revue et intégration ; voir validation/v0.1.md |
 | v0.2 — Go | DONE | 25 AC PASS après correction des six défauts de revue ; 42 AC v0.1 toujours PASS |
 | v0.3 — analyse symbolique et preuves | DONE | 29 AC PASS ; non-régression 42 AC v0.1 + 25 AC v0.2 ; voir validation/v0.3.md et le dernier journal |
-| v0.4–v0.7 | NOT_STARTED | Hors première instruction §24 |
+| v0.4 — analyse interprocédurale | IN_PROGRESS | voir §19 v0.4 et le dernier journal ; ADR-021 ; aucun AC v0.4 PASS pour l'instant |
+| v0.5–v0.7 | NOT_STARTED | Hors périmètre v0.4 |
 
 ## Fonctionnalités §1.1
 
@@ -25,11 +26,11 @@ Ne pas commencer v0.2 avant les 42 AC v0.1 PASS ou dérogation approuvée.
 | Décisions source | DONE (Go v0.2) | Émetteur AST et compteur indépendant, liens et activation bornée |
 | Décisions IR | DONE (CIR v0.1) | Dérivation des terminateurs multi-issues dans SQLite |
 | CFG intra-fonction | DONE (CIR v0.1) | Navigation JSON, dominance CHK, DFS et SCC |
-| Graphe d'appels | PARTIAL | Go statique/CHA, stubs et inconnues explicites ; monde ouvert, approfondissement v0.4 |
+| Graphe d'appels | IN_PROGRESS (v0.4) | Go statique/CHA, stubs et inconnues explicites ; monde ouvert ; call_sites/call_targets persistés et SCC |
 | Propagation symbolique | DONE (v0.3) | Arène typée, interning, simplifications §6.2 ; exploration FIFO, PHI par prédécesseur, budgets, fermeture globale |
 | Vérification SMT | DONE (v0.3) | Z3 réel lié, encodeur SMT-LIB §6.4, solveur scripté, requêtes persistées avec texte et empreinte |
-| Boucles/récursivité | PARTIAL | Arêtes de retour DFS et déroulage borné (coupe = non fermé, aucun PU) ; points fixes/résumés en v0.4 |
-| Résumés interprocéduraux | NOT_STARTED | v0.4 |
+| Boucles/récursivité | IN_PROGRESS (v0.4) | mode `intervals` (ske-abstract) + dépliage borné `max_recursion_unfold` ; voir §19 v0.4 |
+| Résumés interprocéduraux | IN_PROGRESS (v0.4) | §7.1, `ske-summary`, persistance summary_* ; application aux sites d'appel ; rec ; ACC v0.4-03..08 |
 | Modèle de comportements | NOT_STARTED | v0.5 |
 | Connaissance fonctionnelle/règles | NOT_STARTED | v0.5 |
 | Adaptateurs Rust/Java | NOT_STARTED | Interdits dans la première instruction §24 |

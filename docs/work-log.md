@@ -350,3 +350,63 @@ Rapport avec les commandes et logs :
 `docs/validation/v0.3.md` + `target/validation-v03/`.
 Pas de commit, push, merge partagé ni changement de tag. Prochain jalon : v0.4,
 non commencé. CI distante non exécutée.
+
+# v0.4 — analyse interprocédurale — reprise
+
+## Reprise depuis 8004d2f (le checkpoint v0.1→v0.3 squashe par le commanditaire)
+
+État réel initial : `main` à `8004d2f`, arbre propre, seul commit applicatif
+`8004d2f` (« Implement and validate SKE v0.1 through v0.3 »). Le commanditaire
+confirme v0.1, v0.2 et v0.3 validées ; le contenu de v0.1→v0.3 dans ce dépôt
+chargé se résume à ce commit applicatif (les checkpoints historiques
+af0b/9cc8436/b65786a cités par les journaux ne sont pas présents dans ce clone).
+
+Branche de travail : `ske/implementation` créée localement à partir de 8004d2f,
+non poussée ; aucun merge dans `main`. Tag local `cir-v1-candidate` présent,
+non modifié. Aucun push.
+
+Lectures : AGENTS.md (état corrigé : v0.3 validée), état durable,
+dernière section du journal (v0.3 validée), §24, §19 v0.4, §7.1, §8 schéma
+(summary_* déjà dans 0001_initial.sql, aucune migration nécessaire),
+§2.1-2.2 (arborescence et règles de dépendance : crates `ske-abstract` et
+`ske-summary` prévues, whitelist check-deps déjà prête).
+v0.1/v0.2/v0.3 ne sont pas réimplémentées.
+
+Baseline : `cargo test --workspace` vert. `cancel_sigint` a flaky sous charge
+et passe en isolation ; pas un échec réel.
+
+## Fixture v0.4 et état Git
+
+- `examples/go-branch-lab/interproc.go` ajouté (contenu exact §19 v0.4,
+  sans ré-écrire `DivMod`/`ErrZero` qui existent dans `two_returns.go`).
+  `gofmt`, `go build`, `go vet` PASS sur le module.
+- Les tables de persistance v0.4 existent déjà dans `0001_initial.sql` :
+  `call_sites`, `call_targets`, `function_summaries`, `summary_cases`,
+  `summary_case_returns`, `summary_case_outcomes`, `observable_effects`.
+  `call_sites`/`call_targets` sont déjà peuplées par l'ingestion Go (v0.2).
+- Budget moteur et config disposent déjà de `loop_mode` et
+  `max_recursion_unfold` ; `analysis_config.rs` refuse encore
+  `loop_mode != "unroll"` (levée en T-0.4-05).
+
+## Lots v0.4 et propriété des fichiers
+
+- Lot A — `ske-abstract` (intervalles, T-0.4-05) : `crates/ske-abstract/` seul.
+- Lot B — chemins statiques + graphe d'appels (T-0.4-01/07) : `ske-query`
+  (methodes paths), `ske-cli` (commande `paths explore`), test CLI `callgraph`.
+- Lot C — interpréteur concret (T-0.4-06) : `ske-symbolic/src/concrete.rs` +
+  tests du module.
+- Coordinateur — résumés moteur (T-0.4-02/03/04), mode intervalles dans le
+  moteur, persistance summary_* dans `ske-query`, `ske-summary` si nécessaire,
+  tests AC, `verify.sh`, ADR-021, validation.
+
+Contrats retenus — mêmes règles que v0.3 : DTO purs dans les crates pur,
+SQL uniquement dans ske-query, vérificateur relit SQL sans réutiliser le
+classifieur. ADR-021 détaille la clé de cache des résumés et l'algorithme
+des intervalles (points ★ du §19 v0.4).
+
+## État
+
+Implémentation en cours, **aucun AC v0.4 PASS**. Aucun push, aucun merge
+partagé, aucun tag modifié. Prochaine étape : déléguer les lots indépendants
+puis intégrer le moteur des résumés.
+

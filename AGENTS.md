@@ -19,7 +19,19 @@ v0.1 → v0.2 → v0.3, avec délégation et état durable.
   `ske/implementation`.
 - v0.2 : validée, 25 AC PASS après correction des six défauts de revue ;
   régression v0.1 : 42 AC PASS. Voir la validation finale et le dernier journal.
-- v0.3 : non commencée ; prochain jalon, ne pas la présenter comme livrée.
+- v0.3 : validée, 29 AC PASS ; non-régression 42 AC v0.1 + 25 AC v0.2.
+  Voir `docs/validation/v0.3.md` et le dernier journal.
+- v0.4 : en cours sur la branche locale `ske/implementation` à partir du
+  checkpoint `8004d2f`. Ne pas présenter v0.4 comme livrée avant ses AC.
+
+Prochaines étapes v0.4 (ordre §19, jalon unique) :
+
+1. Lire `docs/work-log.md` (dernière section) et `docs/validation/v0.3.md`.
+2. Graphe d'appels + `ske paths explore` (T-0.4-01/07).
+3. Résumés de fonctions §7.1 (T-0.4-02/03/04).
+4. Domaines d'intervalles `ske-abstract` + `loop_mode=intervals` (T-0.4-05).
+5. Interpréteur concret `ske-symbolic::concrete` (T-0.4-06).
+6. Non-régression complète et `verify.sh` → `VERIFY OK v0.4`.
 
 ## Discipline
 
