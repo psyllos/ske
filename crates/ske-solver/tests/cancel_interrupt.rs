@@ -1,6 +1,30 @@
 use ske_solver::{CheckResult, Solver, SolverBudget, Z3Solver};
 use std::time::Instant;
 
+#[test]
+fn chunked_parsing_preserves_declarations_and_assertions() {
+    let mut smt = String::from("(declare-const x Int)\n(assert (= x 1))\n");
+    for _ in 0..17_000 {
+        smt.push_str("(assert (= x x))\n");
+    }
+    smt.push_str("(assert (= x 2))\n");
+    assert_eq!(
+        Z3Solver::new().check_interruptible(
+            &ske_solver::Query {
+                smtlib: smt,
+                variables: vec![],
+            },
+            &SolverBudget {
+                rlimit: 5_000_000,
+                wall_timeout_ms: 0,
+                seed: 0,
+            },
+            &|| false,
+        ),
+        CheckResult::Unsat
+    );
+}
+
 fn hard_smt() -> String {
     let mut s = String::from("(set-logic ALL)\n(declare-fun x () (_ BitVec 64))\n");
     for i in 0..200 {
