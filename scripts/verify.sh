@@ -29,9 +29,9 @@ for fixture in decide check adjusted switch3 invoke mem_nocall mem_opaque; do
 done
 # These integration tests independently encode every §15.2.2 count, each
 # negative error/rollback, and hand-authored projections of public JSON.
-cargo test -p ske-cli --test counts
-cargo test -p ske-cli --test negative
-cargo test -p ske-cli --test golden
+# They are executed by the single `cargo test --workspace` run below; an
+# explicit pre-run was redundant in the nested-validator chain where each
+# level re-ran verify.sh.
 # v0.2: build and execute only our trusted adapter. Studied code is loaded as
 # source; no build/test/generate command is delegated to its project.
 if ! command -v go >/dev/null 2>&1; then
