@@ -17,7 +17,19 @@ tests adaptateur : délai de 2 s dépassé dans
 absent dans `adapter_limits_timeout_kills_descendants_holding_pipes`.
 Ces échecs ne sont ni effacés ni assimilés à des PASS ; les 19 tests
 adaptateur passent en séquentiel et la CI système passe en configuration
-normale. Leur robustesse sous contention reste un suivi distinct.
+normale.
+
+**Robustesse traitée ensuite.** Les deux tests étaient sensibles à la
+contention : une borne de 2 s mesurant le retour « ne doit pas attendre le
+sleep 30 », et un fichier PID écrit par l'enfant après son lancement, exposé
+au meurtre du groupe avant écriture. Correctif dans `adapter_ipc.rs`, sans
+changer le contrat vérifié : bornes de retour portées à 10 s (toujours loin
+du sleep 30, une vraie attente serait ~30 s) ; l'enfant descendant écrit son
+propre PID avant de dormir, et la lecture tolère un retard borné ; l'assertion
+`/bin/ps` (descendant zombie ou absent) est conservée. Après correctif :
+5/5 exécutions en parallélisme par défaut PASS sous machine chargée (un
+premier essai de sérialisation par mutex du module a été retiré : il
+provoquait un interblocage quand un test crée deux fixtures vivantes).
 
 `origin/main` (`02df44f`) a été réconciliée par `e8666d3` : la règle EOF
 de main est conservée exactement, sans le délai de grâce local antérieur,

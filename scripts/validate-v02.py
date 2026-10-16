@@ -95,7 +95,6 @@ with tempfile.TemporaryDirectory(prefix="ske-v02-") as temp:
     run(21, "git tag -l cir-v1-candidate",
         lambda text: expect(text.strip() == "cir-v1-candidate", "local CIR candidate tag missing"))
     inherit = os.environ.get("SKE_INHERIT_VERIFY") == "1"
-    expected_verify = os.environ.get("SKE_EXPECT_VERIFY_VERSION", "v0.2")
     if inherit:
         # Shared, explicitly passed evidence: the enclosing run just executed
         # ./scripts/verify.sh on this tree.
@@ -112,7 +111,7 @@ with tempfile.TemporaryDirectory(prefix="ske-v02-") as temp:
     else:
         run(22, "./scripts/verify.sh",
             lambda text: expect(text.rstrip().endswith(
-                "VERIFY OK " + expected_verify),
+                "VERIFY OK " + os.environ.get("SKE_EXPECT_VERIFY_VERSION", "v0.2")),
                 "missing final expected VERIFY OK"))
     nested = ("SKE_INHERIT_VERIFY=1 " if inherit else "") + "SKE_EXPECT_VERIFY_VERSION=" + shlex.quote(
         os.environ.get("SKE_EXPECT_VERIFY_VERSION", "v0.2")) + " python3 scripts/validate-v01.py"

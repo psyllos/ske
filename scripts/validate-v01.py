@@ -277,15 +277,14 @@ with tempfile.TemporaryDirectory(prefix="ske-v01-") as temp:
     if os.environ.get("SKE_INHERIT_VERIFY") == "1":
         # The enclosing validator already ran ./scripts/verify.sh on this tree
         # moments before. Re-record that shared evidence instead of re-running
-        # the nested workflows at every milestone.
+        # the four nested workflows at every milestone.
         entry = {"ac": "AC-0.1-40", "status": "PASS",
                  "command": "./scripts/verify.sh (inherited from enclosing run)",
-                 "shell": "bash", "exit": 0, "seconds": 0.0,
-                 "assertion_error": "enclosing verify.sh"}
+                 "seconds": 0.0, "assertion_error": "enclosing verify.sh"}
         RESULTS.append(entry)
         (OUT / "AC-0.1-40.log").write_text(
             "Satisfied by the enclosing verify.sh (SKE_INHERIT_VERIFY=1); "
-            "see that run's log for the full evidence.\n", encoding="utf-8")
+            "see that run's log for the full evidence.\n")
         (OUT / "results.json").write_text(json.dumps(RESULTS, indent=2) + "\n", encoding="utf-8")
         print("AC-0.1-40 PASS inherited", flush=True)
     else:

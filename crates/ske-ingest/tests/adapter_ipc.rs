@@ -14,6 +14,7 @@ use std::{
     fs,
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
+    thread,
     time::{Duration, Instant},
 };
 
@@ -39,6 +40,19 @@ impl ChildFixture {
     }
     fn list(&self, limits: &RunLimits) -> ske_common::Result<Vec<UnitDescriptor>> {
         list_units(&self.executable, self.dir.path(), "{}", limits)
+    }
+}
+
+// Bounded retry so a momentarily starved child can still land its file write
+// before the read; the deadline stays far below any `sleep 30` descendant.
+fn read_file_bounded(path: &Path, give_up: Duration) -> Option<String> {
+    let deadline = Instant::now() + give_up;
+    loop {
+        match fs::read_to_string(path) {
+            Ok(text) => return Some(text),
+            Err(_) if Instant::now() < deadline => thread::sleep(Duration::from_millis(20)),
+            Err(_) => return None,
+        }
     }
 }
 fn frames(bodies: Vec<adapter_response::Body>) -> Vec<u8> {
@@ -161,7 +175,10 @@ fn adapter_limits_invalid_frame_does_not_wait_for_child_exit() {
     let child = ChildFixture::new(&[0, 0, 0, 0], "cat response\nsleep 30");
     let start = Instant::now();
     assert_eq!(child.list(&limits()).unwrap_err().code, "E_PROTO_DECODE");
-    assert!(start.elapsed() < Duration::from_secs(2));
+    // Prompt return: far below the child's 30 s sleep, with room for process
+    // startup latency on a loaded machine; waiting for the child would take
+    // about 30 s and still be caught.
+    assert!(start.elapsed() < Duration::from_secs(10));
 }
 #[test]
 fn adapter_limits_eof_still_bounds_wait_for_child_exit() {
@@ -175,7 +192,9 @@ fn adapter_limits_eof_still_bounds_wait_for_child_exit() {
         .unwrap_err();
     assert_eq!(error.code, "E_ADAPTER_LIMIT");
     assert!(error.message.contains("monitoring limit"), "{error}");
-    assert!(start.elapsed() < Duration::from_secs(2));
+    // Bound, far below the child's 30 s sleep, with room for process startup
+    // latency on a loaded machine.
+    assert!(start.elapsed() < Duration::from_secs(10));
 }
 #[test]
 fn adapter_limits_stderr_flood_drained_without_polluting_frames() {
@@ -512,7 +531,9 @@ fn source_hash_symlink_escape_is_rejected_even_when_digest_matches() {
 }
 #[test]
 fn adapter_limits_timeout_kills_descendants_holding_pipes() {
-    let child = ChildFixture::new(&[], "sleep 30 &\necho $! > descendant\nwait");
+    // The descendant records its own PID before sleeping, so its identity never
+    // races the group kill, and the read below tolerates a short write delay.
+    let child = ChildFixture::new(&[], "sh -c 'echo $$ > descendant; exec sleep 30' &\nwait");
     let start = Instant::now();
     assert_eq!(
         child
@@ -525,7 +546,8 @@ fn adapter_limits_timeout_kills_descendants_holding_pipes() {
         "E_ADAPTER_LIMIT"
     );
     assert!(start.elapsed() < Duration::from_secs(5));
-    let pid = fs::read_to_string(child.dir.path().join("descendant")).unwrap();
+    let pid = read_file_bounded(&child.dir.path().join("descendant"), Duration::from_secs(5))
+        .expect("descendant must record its PID before the group kill");
     // Zombies may remain until init reaps them, but cannot hold pipes or execute.
     let output = std::process::Command::new("/bin/ps")
         .args(["-o", "stat=", "-p", pid.trim()])
