@@ -1407,3 +1407,43 @@ CI distante exécutée.
 Limites d'adaptateur à conserver : §10.1 partiel (Rust MATCH/? et Java effets
 d'appels externes, `PARTIAL` explicites), portabilité nightly Rust à confirmer
 sur une machine neuve, redistribution du jar Java après audit LGPL.
+
+## Push main et CI verte v0.6
+
+Autorisation explicite « pousse et vérifie que la build fonctionne ».
+`main` local avancé et poussé sur `origin/main` (fast-forward) :
+
+- `22f0399` jalon v0.6 + tag `cir-v1.0-frozen`
+- `ea15f49` consignation docs
+- `d6db248` CI : outillage exact (nightly MIR `nightly-2026-10-15`, JDK 24.0.1,
+  Maven 3.10.0)
+- `cd771c4` CI : JAVA_HOME par OS (ligne GITHUB_ENV valide)
+- `8bcfe0f` ingestion : marge d'adresse virtuelle Linux au-dessus du budget RSS
+- `a4a17db` tests : surfaces stderr + diagnostics persistés à l'échec d'ingest
+
+### Causes des échecs CI Linux et correctifs
+
+1. Pousser `ci.yml` nécessitait le scope `workflow` : le token HTTPS configuré
+   ne l'avait pas ; `gh auth setup-git` a basculé l'aide d'identité sur le token
+   `gh` (scope workflow présent) et le push a réussi.
+2. `JAVA_HOME=` exporté sans clé (`Contents/Home` nu) rejeté par GitHub ; corrigé
+   en écrivant `KEY=value` selon l'OS (macOS `Contents/Home`, Linux racine).
+3. Échecs Linux **intermittents** (`failed:0`) sur les tests multilang malgré
+   macOS vert : `prlimit --as=4096MiB` limite l'adresse virtuelle, pas la RSS, et
+   la JVM SootUp réserve de grandes plages virtuelles ; sous charge parallèle la
+   JVM pouvait ne pas démarrer. Correctif : garder le watchdog RSS agrégé comme
+   borne réelle à `max_memory_mb` et donner au `--as` un multiplicateur de marge
+   (8×) documenté. Non régression : les tests IPC passent (20), le comportement
+   mémoire réel est inchangé (borne RSS).
+
+### CI finale verte
+
+`origin/main` à `a4a17db`. Run
+https://github.com/psyllos/ske/actions/runs/39026189933 : **SUCCESS**
+Linux (11m14s) et macOS (12m44s) ; format / Clippy strict /
+`cargo test --workspace --locked` (12/12 multilang) / `verify.sh` complets.
+Le décalage runtime `nightly-2026-10-15` (hash `7df8…`) est installé par CI et
+coïncide avec le pin ; la portabilité nightly est ainsi levée pour la CI.
+Gel `cir-v1.0-frozen` posé sur `22f0399` ; `origin/main` avancé de `17036c0`
+à `a4a17db`. Limites d'adaptateur (Rust MATCH/?, Java effet externes, LGPL)
+inchangées et documentées.

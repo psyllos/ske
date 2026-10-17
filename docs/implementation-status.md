@@ -15,7 +15,7 @@ Ne pas commencer v0.2 avant les 42 AC v0.1 PASS ou dérogation approuvée.
 | v0.3 — analyse symbolique et preuves | DONE | 29 AC PASS ; non-régression 42 AC v0.1 + 25 AC v0.2 ; voir validation/v0.3.md et le dernier journal |
 | v0.4 — analyse interprocédurale | DONE | 14 AC PASS ; 42 AC v0.1 + 25 AC v0.2 + 29 AC v0.3 PASS ; voir validation/v0.4.md et les frontières de précision dans soundness-and-limits.md. Correctif SIGINT, parsing SMT par lots et priorité d'erreur adaptateur intégrés (CI Linux/macOS verte) |
 | v0.5 — connaissance comportementale | DONE | 13 AC PASS ; non-régression 42 AC v0.1 + 25 AC v0.2 + 29 AC v0.3 + 14 AC v0.4 PASS. Voir validation/v0.5.md, le dernier journal et les frontières dans soundness-and-limits.md |
-| v0.6 — adaptateurs Rust et Java | DONE | 14 AC PASS sur `python3 scripts/validate-v06.py` (commit local `22f0399`, tag `cir-v1.0-frozen`) ; 123 AC antérieurs rejoués. Limites §10.1 documentées par ADR. Aucun push ; CI distante non exécutée |
+| v0.6 — adaptateurs Rust et Java | DONE | 14 AC PASS sur `python3 scripts/validate-v06.py` (commit `22f0399`, tag `cir-v1.0-frozen`) ; 123 AC antérieurs rejoués ; main poussé à `a4a17db`, CI Linux/macOS verte (run 39026189933). Limites §10.1 documentées par ADR |
 | v0.7 — API/MCP/LLM, incréments | NOT_STARTED | Hors périmètre de la demande actuelle |
 
 ## Fonctionnalités §1.1
