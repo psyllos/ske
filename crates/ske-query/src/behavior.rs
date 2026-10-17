@@ -621,6 +621,7 @@ pub fn reconstruct(
     let response = json!({
         "function": qualified,
         "run_id": run,
+        "summary_run_id": summary_run,
         "precision": precision,
         "scenario": {"id":scenario,"complete":unknown_effects.is_empty(),"external_boundary":
             if unknown_effects.is_empty() { Value::Null } else { json!("EXTERNAL_UNKNOWN") }},
@@ -704,13 +705,6 @@ fn persist_evidence(
             |r| r.get(0),
         )
         .map_err(sql)?;
-    let rule_key: String = db
-        .query_row(
-            "SELECT rule_key FROM functional_rules WHERE id=?1",
-            [rule_id],
-            |r| r.get(0),
-        )
-        .map_err(sql)?;
     let mut evidence = Vec::new();
     for sid in &behavior.summary_case_ids {
         db.execute(
@@ -718,7 +712,12 @@ fn persist_evidence(
             params![rule_id, sid],
         )
         .map_err(sql)?;
-        evidence.push(json!({"kind":"summary_case","id":rule_key,"relation":"DERIVED_FROM"}));
+        evidence.push(summary_evidence(
+            db,
+            snapshot,
+            *sid,
+            &json!("DERIVED_FROM"),
+        )?);
     }
     for ir_id in &behavior.referenced_outcomes {
         let (label, unit_key) = outcome_identity(db, snapshot, *ir_id)?;
@@ -755,6 +754,23 @@ fn persist_evidence(
         }
     }
     Ok(evidence)
+}
+
+/// Name the persisted summary producer, not the separate BEHAVIOR run.
+fn summary_evidence(db: &Connection, snapshot: i64, case: i64, relation: &Value) -> Result<Value> {
+    let source = super::one(
+        db,
+        "SELECT s.qualified_name,fs.produced_by_run_id,c.case_ordinal
+        FROM summary_cases c JOIN function_summaries fs ON fs.id=c.summary_id
+        JOIN functions f ON f.id=fs.function_id JOIN symbols s ON s.id=f.symbol_id
+        JOIN analysis_runs r ON r.id=fs.produced_by_run_id
+        WHERE c.id=?1 AND s.snapshot_id=?2 AND r.snapshot_id=?2",
+        params![case, snapshot],
+    )?;
+    let producer = &source["produced_by_run_id"];
+    Ok(json!({"kind":"summary_case","id":format!("{}@run{}#case{}",
+        source["qualified_name"].as_str().unwrap(),producer,source["case_ordinal"]),
+        "summary_case_id":case,"producer_run_id":producer,"relation":relation}))
 }
 
 fn outcome_identity(db: &Connection, snapshot: i64, id: i64) -> Result<(String, String)> {
@@ -821,8 +837,7 @@ pub fn list_rules(
                         json!({"kind":"ir_outcome","id":label,"unit_key":unit,"relation":relation}),
                     );
                 } else if let Some(id) = e["summary_case_id"].as_i64() {
-                    anchors.push(json!({"kind":"summary_case","id":rule["rule_key"],
-                        "summary_case_id":id,"relation":relation}));
+                    anchors.push(summary_evidence(db, snapshot, id, &relation)?);
                 } else if e["source_span_id"].is_i64() {
                     anchors
                         .push(json!({"kind":"source_span","span":e["span"],"relation":relation}));
@@ -893,12 +908,10 @@ pub fn stale_check(db: &Connection, repository: &str, from: &str, to: &str) -> R
         let b_function = matches.first().and_then(|v| v["id"].as_i64());
         let mut changed = false;
         if let Some(b_function) = b_function {
-            let a = super::analysis_load::load(db, a_function).ok();
-            let b = super::analysis_load::load(db, b_function).ok();
+            let a = dependency_structure(db, a_function).ok();
+            let b = dependency_structure(db, b_function).ok();
             match (a, b) {
-                (Some(a), Some(b)) => {
-                    changed = super::summaries::structural(&a) != super::summaries::structural(&b)
-                }
+                (Some(a), Some(b)) => changed = a != b,
                 _ => changed = true,
             }
         }
@@ -922,6 +935,44 @@ pub fn stale_check(db: &Connection, repository: &str, from: &str, to: &str) -> R
     });
     tx.commit().map_err(sql)?;
     Ok(response)
+}
+
+/// Finite closure of known callees and profiles, including recursive SCCs.
+/// A changed callee invalidates composed rules without rerunning the solver.
+fn dependency_structure(
+    db: &Connection,
+    entry: i64,
+) -> Result<std::collections::BTreeMap<(String, String), String>> {
+    let mut result = std::collections::BTreeMap::new();
+    let mut seen = std::collections::BTreeSet::new();
+    let mut pending = vec![entry];
+    while let Some(function) = pending.pop() {
+        if !seen.insert(function) {
+            continue;
+        }
+        let identity=super::one(db,"SELECT s.qualified_name,u.unit_key,u.semantic_profile_hash,u.build_fingerprint
+            FROM functions f JOIN symbols s ON s.id=f.symbol_id JOIN compilation_units u ON u.id=s.unit_id WHERE f.id=?1",[function])?;
+        let structure = super::summaries::structural(&super::analysis_load::load(db, function)?);
+        result.insert(
+            (
+                identity["unit_key"].as_str().unwrap().to_owned(),
+                identity["qualified_name"].as_str().unwrap().to_owned(),
+            ),
+            ske_common::sha256_hex(ske_common::canonical_json(&json!([
+                structure,
+                identity["semantic_profile_hash"],
+                identity["build_fingerprint"]
+            ]))?),
+        );
+        for callee in rows(db,"SELECT DISTINCT target.id FROM call_sites cs JOIN instructions i ON i.id=cs.instruction_id
+            JOIN basic_blocks b ON b.id=i.block_id JOIN call_targets ct ON ct.call_site_id=cs.id
+            JOIN functions stub ON stub.id=ct.target_function_id
+            JOIN functions target ON target.id=COALESCE(stub.resolved_function_id,stub.id)
+            WHERE b.function_id=?1 AND target.is_external=0",[function])? {
+            pending.push(callee["id"].as_i64().unwrap());
+        }
+    }
+    Ok(result)
 }
 
 /// Resolve a snapshot selector (integer id or `latest`) within a repository.

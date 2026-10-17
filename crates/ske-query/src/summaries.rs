@@ -15,6 +15,8 @@ use ske_symbolic::{
 };
 use std::collections::BTreeMap;
 
+pub(crate) const ENGINE_VERSION: &str = "ske-summary-scalar-0.5-path-effects-v1";
+
 fn engine_error(message: String) -> Error {
     Error::new("E_INTERNAL", message)
 }
@@ -421,11 +423,11 @@ impl Calculation<'_> {
                             "EXACT"
                         } else { "OVERAPPROX" },span,serde_json::to_string(&delta).unwrap()]).map_err(sql)?;
                 let case_id = self.db.last_insert_rowid();
-                if !summary.composable {
+                for (ordinal, site) in case.effects.iter().enumerate() {
                     self.db.execute(
                         "INSERT INTO observable_effects(summary_case_id,effect_ordinal,effect_kind,precision,payload)
-                         VALUES(?1,0,'UNKNOWN_EFFECT','OVERAPPROX','memory effects not modeled by scalar summaries')",
-                        [case_id]).map_err(sql)?;
+                         VALUES(?1,?2,'UNKNOWN_EFFECT','OVERAPPROX',?3)",
+                        params![case_id,ordinal as i64,serde_json::to_string(site).map_err(|e|engine_error(e.to_string()))?]).map_err(sql)?;
                 }
                 for (index, expression) in case.values.iter().enumerate() {
                     let id = analysis::persist_expr(
@@ -599,14 +601,14 @@ pub fn run(db: &Connection, snapshot: i64, entry: i64, budget: &Budget) -> Resul
         .map_err(sql)?;
     let context = sha256_hex("{}");
     let config = sha256_hex(format!(
-        "{snapshot_config}|{budget_json}|{context}|ske-summary-scalar-0.5-cache-v2|{}|{}",
+        "{snapshot_config}|{budget_json}|{context}|{ENGINE_VERSION}|{}|{}",
         solver.name(),
         solver.version()
     ));
     tx.execute(
         "INSERT INTO analysis_runs(snapshot_id,entry_function_id,analysis_kind,engine_version,
          solver_name,solver_version,config_fingerprint,assumptions_fingerprint,budget_json,status)
-         VALUES(?1,?2,'SUMMARY','ske-summary-scalar-0.5',?3,?4,?5,?6,?7,'RUNNING')",
+         VALUES(?1,?2,'SUMMARY',?8,?3,?4,?5,?6,?7,'RUNNING')",
         params![
             snapshot,
             entry,
@@ -614,7 +616,8 @@ pub fn run(db: &Connection, snapshot: i64, entry: i64, budget: &Budget) -> Resul
             solver.version(),
             config,
             context,
-            budget_json
+            budget_json,
+            ENGINE_VERSION,
         ],
     )
     .map_err(sql)?;
@@ -1073,6 +1076,18 @@ fn reconstruct_summary(db: &Connection, summary_id: i64, snapshot: i64) -> Resul
             values,
             partial,
             memory_delta,
+            effects: query_maps(
+                db,
+                "SELECT payload FROM observable_effects
+                WHERE summary_case_id=?1 ORDER BY effect_ordinal",
+                [source_case],
+            )?
+            .iter()
+            .map(|e| {
+                serde_json::from_str::<String>(e["payload"].as_str().unwrap_or(""))
+                    .map_err(|e| engine_error(e.to_string()))
+            })
+            .collect::<Result<Vec<_>>>()?,
         });
     }
     let unknowns: Vec<String> =
@@ -1113,7 +1128,10 @@ fn reconstruct_summary(db: &Connection, summary_id: i64, snapshot: i64) -> Resul
         residual: false,
         assumptions,
         unknowns,
-        composable: !opaque_effects,
+        // Empty path effects do not prove model composability (e.g. an
+        // unsupported pointee read). The relational format does not retain
+        // that flag for non-exact summaries: keep their application opaque.
+        composable: !opaque_effects && precision == "EXACT",
         global_reads,
     })
 }

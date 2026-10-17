@@ -169,6 +169,7 @@ impl FunctionSummary {
                 values,
                 partial: true,
                 memory_delta: vec![],
+                effects: vec![format!("UNKNOWN_RECURSION_EFFECT:{}", program.function.id)],
             }],
             precision: Precision::Partial,
             complete: false,

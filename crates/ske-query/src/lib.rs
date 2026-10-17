@@ -434,8 +434,9 @@ impl Query {
         let has_summary: bool = self
             .db()
             .query_row(
-                "SELECT EXISTS(SELECT 1 FROM function_summaries WHERE function_id=?1 AND complete=1)",
-                [function],
+                "SELECT EXISTS(SELECT 1 FROM function_summaries fs JOIN analysis_runs r ON r.id=fs.produced_by_run_id
+                 WHERE fs.function_id=?1 AND fs.complete=1 AND r.engine_version=?2)",
+                params![function,summaries::ENGINE_VERSION],
                 |r| r.get(0),
             )
             .map_err(sql)?;

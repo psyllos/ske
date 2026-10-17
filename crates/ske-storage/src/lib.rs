@@ -151,6 +151,16 @@ impl Storage {
 }
 
 fn migrate(conn: &mut Connection) -> Result<()> {
+    migrate_files(
+        conn,
+        &[
+            (1, "initial", INITIAL_MIGRATION),
+            (2, "capabilities", CAPABILITIES_MIGRATION),
+        ],
+    )
+}
+
+fn migrate_files(conn: &mut Connection, files: &[(i64, &str, &str)]) -> Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS schema_migrations (
             version INTEGER PRIMARY KEY, description TEXT NOT NULL,
@@ -158,64 +168,79 @@ fn migrate(conn: &mut Connection) -> Result<()> {
         );",
     )
     .map_err(map_sql_error)?;
-    // The immediate lock covers both checking and applying, so concurrent opens
-    // cannot race into applying the same migration.
-    let tx = conn
-        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-        .map_err(map_sql_error)?;
-    let checksum = sha256_hex(INITIAL_MIGRATION);
-    let applied: Option<String> = tx
-        .query_row(
-            "SELECT checksum FROM schema_migrations WHERE version=1",
-            [],
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(map_sql_error)?;
-    match applied {
-        Some(previous) if previous != checksum => {
-            return Err(Error::new(
-                "E_MIGRATION_CHECKSUM",
-                "Migration 0001 checksum differs",
-            ));
-        }
-        Some(_) => {}
-        None => {
-            tx.execute_batch(INITIAL_MIGRATION).map_err(map_sql_error)?;
-            tx.execute(
-                "INSERT INTO schema_migrations(version,description,checksum) VALUES(1,'initial',?1)",
-                [checksum],
-            ).map_err(map_sql_error)?;
-        }
-    }
-    // v0.5: migration 0002 (capabilities), same immediate transaction, its own checksum record.
-    let capabilities_checksum = sha256_hex(CAPABILITIES_MIGRATION);
-    let applied: Option<String> = tx
-        .query_row(
-            "SELECT checksum FROM schema_migrations WHERE version=2",
-            [],
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(map_sql_error)?;
-    match applied {
-        Some(previous) if previous != capabilities_checksum => {
-            return Err(Error::new(
-                "E_MIGRATION_CHECKSUM",
-                "Migration 0002 checksum differs",
-            ));
-        }
-        Some(_) => {}
-        None => {
-            tx.execute_batch(CAPABILITIES_MIGRATION)
+    // Each file is a durable checkpoint (§8.1). Lock before inspecting its
+    // checksum; concurrent opens cannot race into applying the same file.
+    for &(version, description, sql) in files {
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(map_sql_error)?;
+        let checksum = sha256_hex(sql);
+        let applied: Option<String> = tx
+            .query_row(
+                "SELECT checksum FROM schema_migrations WHERE version=?1",
+                [version],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(map_sql_error)?;
+        match applied {
+            Some(previous) if previous != checksum => {
+                return Err(Error::new(
+                    "E_MIGRATION_CHECKSUM",
+                    format!("Migration {version:04} checksum differs"),
+                ))
+            }
+            Some(_) => {}
+            None => {
+                tx.execute_batch(sql).map_err(map_sql_error)?;
+                tx.execute(
+                    "INSERT INTO schema_migrations(version,description,checksum) VALUES(?1,?2,?3)",
+                    rusqlite::params![version, description, checksum],
+                )
                 .map_err(map_sql_error)?;
-            tx.execute(
-                "INSERT INTO schema_migrations(version,description,checksum) VALUES(2,'capabilities',?1)",
-                [capabilities_checksum],
-            ).map_err(map_sql_error)?;
+            }
         }
+        tx.commit().map_err(map_sql_error)?;
     }
-    tx.commit().map_err(map_sql_error)
+    Ok(())
+}
+
+#[cfg(test)]
+mod migration_checkpoint_tests {
+    use super::*;
+    #[test]
+    fn later_migration_failure_preserves_real_v1_checkpoint() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        assert!(migrate_files(
+            &mut conn,
+            &[
+                (1, "initial", INITIAL_MIGRATION),
+                (
+                    2,
+                    "broken",
+                    "CREATE TABLE rolled_back(value TEXT); INVALID SQL;"
+                ),
+            ]
+        )
+        .is_err());
+        let versions: i64 = conn
+            .query_row("SELECT COUNT(*) FROM schema_migrations", [], |r| r.get(0))
+            .unwrap();
+        let tables:i64=conn.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",[],|r|r.get(0)).unwrap();
+        assert_eq!((versions, tables), (1, 47));
+        migrate(&mut conn).unwrap();
+        let tables:i64=conn.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",[],|r|r.get(0)).unwrap();
+        assert_eq!(tables, 50);
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM schema_migrations WHERE version=2",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
+    }
 }
 
 fn require_status(conn: &Connection, id: i64, expected: &str) -> Result<()> {

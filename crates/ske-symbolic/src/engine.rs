@@ -115,6 +115,8 @@ pub struct Exit {
     /// A residual recursive invocation was overapproximated on this path.
     pub partial: bool,
     pub memory_delta: Vec<(Loc, ExprId)>,
+    /// Ordered opaque/external effect sites actually executed on this path.
+    pub effects: Vec<String>,
 }
 #[derive(Clone, Debug)]
 pub enum Event {
@@ -172,6 +174,7 @@ struct State {
     predecessor: Option<String>,
     env: Arc<BTreeMap<String, ExprId>>,
     tuples: Arc<BTreeMap<String, Vec<ExprId>>>,
+    effects: Arc<Vec<String>>,
     partial: bool,
     residual_return: bool,
     abstract_headers: Arc<BTreeSet<String>>,
@@ -461,6 +464,7 @@ impl Runner<'_> {
             values,
             partial: s.partial,
             memory_delta: s.memory.summary_delta(),
+            effects: (*s.effects).clone(),
         };
         (self.emit)(&Event::Exit(e.clone()));
         self.report.exits.push(e);
@@ -811,6 +815,7 @@ pub fn analyze_with_summaries(
         predecessor: None,
         env: Arc::new(env),
         tuples: Arc::new(BTreeMap::new()),
+        effects: Arc::new(Vec::new()),
         partial: false,
         residual_return: false,
         abstract_headers: Arc::new(BTreeSet::new()),
@@ -834,7 +839,12 @@ pub fn analyze_with_summaries(
         // Conservative deterministic accounting includes all arena nodes and pending maps.
         let estimated = queue
             .iter()
-            .map(|s| s.env.len() * 64 + s.constraints.len() * 8 + 256)
+            .map(|s| {
+                s.env.len() * 64
+                    + s.constraints.len() * 8
+                    + s.effects.iter().map(|id| id.len() + 24).sum::<usize>()
+                    + 256
+            })
             .sum::<usize>()
             + r.backend.arena.iter().count() * 256;
         if start.elapsed().as_millis() >= u128::from(budget.max_wall_time_ms)
@@ -868,7 +878,11 @@ pub fn analyze_with_summaries(
             s.memory_id,
             (s.soundness, s.partial, s.residual_return),
             s.path.ordered(),
-            ((*s.tuples).clone(), (*s.abstract_headers).clone()),
+            (
+                (*s.tuples).clone(),
+                (*s.abstract_headers).clone(),
+                (*s.effects).clone(),
+            ),
         );
         if !seen.insert(key) {
             continue;
@@ -922,6 +936,7 @@ pub fn analyze_with_summaries(
                     let mut edges = block.edges.clone();
                     edges.sort_by_key(|e| e.definition.outcome_ordinal);
                     if ins.opcode == "INVOKE" {
+                        Arc::make_mut(&mut s.effects).push(ins.id.clone());
                         s.soundness = s.soundness.max(Soundness::Opaque);
                         r.diagnostic("EXCEPTION_FLOW_PARTIAL");
                     }
@@ -1076,6 +1091,7 @@ pub fn analyze_with_summaries(
                         break;
                     }
                     t.soundness = t.soundness.max(case.soundness);
+                    Arc::make_mut(&mut t.effects).extend(case.effects.iter().cloned());
                     t.partial |= case.partial;
                     // At the recursive bound, the remainder of this activation
                     // is one residual return H. Outer activations still compose
@@ -1297,6 +1313,7 @@ pub fn analyze_with_summaries(
                     }
                 } else {
                     if s.memory.store(&pointer, operands[1]) == StoreEffect::Havoc {
+                        Arc::make_mut(&mut s.effects).push(ins.id.clone());
                         s.soundness = s.soundness.max(Soundness::Opaque);
                         r.diagnostic("OPAQUE_OP_EMITTED");
                     }
@@ -1363,6 +1380,7 @@ pub fn analyze_with_summaries(
                         )?);
                     }
                 } else {
+                    Arc::make_mut(&mut s.effects).push(ins.id.clone());
                     s.soundness = s.soundness.max(Soundness::Opaque);
                     r.diagnostic("OPAQUE_OP_EMITTED");
                 }
@@ -1507,6 +1525,7 @@ pub fn analyze_with_summaries(
             "DEFER_PUSH" | "RUN_DEFERS" | "RECOVER" | "UNKNOWN_EFFECT" | "OPAQUE_OP" | "SPAWN"
             | "JOIN" | "CHANNEL_SEND" | "CHANNEL_RECV" | "LOCK" | "UNLOCK" | "EMIT_EFFECT"
             | "INSERT_FIELD" => {
+                Arc::make_mut(&mut s.effects).push(ins.id.clone());
                 s.memory.havoc_all_memory();
                 s.soundness = s.soundness.max(Soundness::Opaque);
                 r.diagnostic(match ins.opcode.as_str() {

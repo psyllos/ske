@@ -1162,3 +1162,44 @@ validation v0.5 d'un thread voisin).
 Landing `/land` autorisé : rapports consolidés puis avance rapide de main
 uniquement après CI verte du candidat final. Aucun changement normatif,
 golden, migration ou fichier généré ; v0.5 non commencée dans ce thread.
+
+## Réconciliation autorisée de deux implémentations v0.5
+
+Demande actuelle : conserver l'architecture de main et n'y porter que les
+corrections manquantes, valider le candidat intégré et sa CI, puis terminer
+le `/land`. `origin/main` vérifié à `72e1db9`; checkpoint indépendant
+préservé sur `ske/v05-restoration-checkpoint` (`5e75a1f`).
+Branche de travail propre créée depuis main : `ske/v05-main-fixes`.
+
+Ne pas fusionner globalement les deux implémentations : les API/modules
+et la restauration relationnelle de main sont conservés, ainsi que les
+capacités/scénarios. Ni migration 0003 ni second moteur ne sont portés.
+
+Trois régressions ont été reproduites rouges sur main et corrigées :
+stale-check transitif, traces d'effets par chemin et identité du producteur
+des evidence. Une quatrième protège la frontière des anciens caches.
+Les 4 tests ciblés passent. Runner de migration corrigé pour des checkpoints
+par fichier (1 + 13 tests storage PASS), schémas normatifs inchangés.
+Rendu booléen imbriqué et ordre local des décisions étaient déjà présents :
+aucune réimplémentation. Le validateur reçoit seulement le garde-fou
+d'échec préalable et la visibilité des durées/heartbeat.
+
+Rapport durable : `docs/validation/reconcile-v0.5.md`.
+Prochaine étape : une campagne complète du candidat intégré, puis commit,
+publication sur branche candidate et CI Linux/macOS ; intégration de main
+uniquement après résultat vert. Aucun push/merge partagé à ce stade.
+
+### Validation du candidat intégré terminée
+
+`RUST_TEST_THREADS=1 python3 scripts/validate-v05.py` : exit 0,
+13/13 v0.5 + 42/42 v0.1 + 25/25 v0.2 + 29/29 v0.3 + 14/14 v0.4.
+Les cinq results.json sont contrôlés indépendamment. Log :
+`target/land-v05-main/validate-v05.log`, environ 14 minutes ; phase
+verify/régression 800,91 s. Un seul marqueur `VERIFY OK v0.5`.
+Les quatre tests `v05_reconciliation` sont inclus dans la suite workspace ;
+aucun test ignoré pour contourner un échec. Rapport :
+`docs/validation/reconcile-v0.5.md`.
+
+Prochaine étape autorisée : publier ce candidat puis attendre sa CI
+Linux/macOS avant toute avance de main. Ne pas substituer la CI verte
+historique de `72e1db9` à la CI de ces corrections.

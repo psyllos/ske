@@ -7,6 +7,9 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import signal
+import threading
+import time
 
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "target/validation-v05"
@@ -14,18 +17,48 @@ ENV = dict(os.environ, PATH=f"{ROOT / 'target/debug'}:{os.environ['PATH']}")
 
 
 def execute(command):
+    start = time.monotonic()
+    done = threading.Event()
+    def heartbeat():
+        while not done.wait(30):
+            print(f"RUNNING {int(time.monotonic() - start)}s: {command}", flush=True)
+    watcher = threading.Thread(target=heartbeat, daemon=True)
     process = subprocess.Popen(["bash", "-o", "pipefail", "-c", command],
                                cwd=ROOT, env=ENV, text=True,
-                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                               start_new_session=True)
+    watcher.start()
     chunks = []
-    for line in process.stdout:
-        chunks.append(line)
-        print(line, end="", flush=True)
+    try:
+        for line in process.stdout:
+            chunks.append(line)
+            print(line, end="", flush=True)
+        code = process.wait()
+    except BaseException:
+        if process.poll() is None:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.wait()
+            except ProcessLookupError:
+                pass
+        raise
+    finally:
+        process.stdout.close()
+        done.set()
+        watcher.join()
     text = "".join(chunks)
-    code = process.wait()
+    print(f"END exit={code} {time.monotonic() - start:.2f}s: {command}", flush=True)
     if code:
         raise AssertionError(f"exit {code}\n{text}")
     return text
+
+def require_regression_ready(results):
+    failed = [r["ac"] for r in results if r["status"] == "FAIL"]
+    if failed:
+        raise AssertionError("regression not started: prerequisite failures: " + ", ".join(failed))
 
 
 def main():
@@ -45,6 +78,10 @@ def main():
             return
         print(f"{record['ac']} RUNNING: {command}", flush=True)
         try:
+            if number == 12:
+                require_regression_ready(results)
+                for version in ("v01", "v02", "v03", "v04"):
+                    (ROOT / f"target/validation-{version}/results.json").unlink(missing_ok=True)
             text = execute(command)
             passed = re.findall(r"^test ([\w:]+) \.\.\. ok$", text, re.M)
             for name in names:
