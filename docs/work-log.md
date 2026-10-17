@@ -1382,3 +1382,28 @@ mais l'arbre n'est pas encore commité (un tag sur HEAD antérieur serait
 trompeur) et gel + commit engagent l'avenir du protocole. La décision revient
 au commanditaire, de même que l'autorisation de commit/push réservée par la
 demande. Rapport: `docs/validation/v0.6.md`.
+
+## Clôture v0.6 — commit local, gel CIR et validation complète
+
+Autorisation explicite de psylloys : « branche dans le main local et enchaîne ».
+Le travail v0.6 a été committé sur `main` local :
+
+- `22f0399` : adaptateurs Rust/Java, ingestion/CLI multilangage, tests croisés,
+  correctifs `E_TYPE_MISMATCH`/confinement, harness v0.6, ADR et rapports.
+  Arbre propre avant commit ; aucun artefact généré (target/, jar, log) inclus.
+- Tag annoté `cir-v1.0-frozen` posé sur `22f0399`, seulement après réussite
+  des pilotes Go/Rust/Java et des contrôles d'exceptions/match/types/flot.
+- `python3 scripts/validate-v06.py` relancé après le gel : **14/14 AC PASS**,
+  AC-0.6-13 PASS (tag présent). La non-régression AC-0.6-12 rejoue 42 v0.1 +
+  25 v0.2 + 29 v0.3 + 14 v0.4 + 13 v0.5, tous PASS, sur l'arbre committé.
+
+Consignation (docs uniquement) commise ensuite : v0.6.md (« 14 AC PASS »),
+v0.5.md restauré en « validée » (le validateur régénère un en-tête « en
+cours » ; la preuve v0.5 reste celle de `reconcile-v0.5.md`), chemins
+temporaires v0.3/v0.4 à jour, statut DONE. Aucune modification de code dans
+cette consignation. Aucun push ni fusion vers une branche partagée ; aucune
+CI distante exécutée.
+
+Limites d'adaptateur à conserver : §10.1 partiel (Rust MATCH/? et Java effets
+d'appels externes, `PARTIAL` explicites), portabilité nightly Rust à confirmer
+sur une machine neuve, redistribution du jar Java après audit LGPL.
