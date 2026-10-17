@@ -164,14 +164,22 @@ fn run<T>(
             "adapter request exceeds message limit",
         ));
     }
-    // Linux prlimit applies a hard address-space ceiling before exec, not a
-    // best-effort RSS sample after a potentially unbounded allocation.
+    // Linux prlimit applies a hard address-space ceiling before exec. The real
+    // memory budget is enforced by the RSS watchdog below; address-space (not
+    // RSS) must leave headroom for legitimate virtual reservations of compilers
+    // and JVMs (heap reservoir, metaspace, code cache, thread stacks). A raw
+    // --as equal to the RSS cap makes the Java/SootUp adapter and other virtual
+    // reservation-heavy children fail to start on Linux. Keep a documented
+    // virtual headroom multiplier; the aggregate RSS monitor stays the binding
+    // ceiling at max_memory_mb.
     #[cfg(target_os = "linux")]
     let mut command = {
+        const VIRTUAL_AS_MULTIPLIER: u64 = 8;
         let mut command = Command::new("prlimit");
         let bytes = limits
             .max_memory_mb
             .checked_mul(1024 * 1024)
+            .and_then(|b| b.checked_mul(VIRTUAL_AS_MULTIPLIER))
             .ok_or_else(|| err("E_USAGE", "memory limit overflow"))?;
         command
             .arg(format!("--as={bytes}"))
