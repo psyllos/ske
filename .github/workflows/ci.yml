@@ -39,7 +39,13 @@ jobs:
           curl -fsSL -o "/tmp/jdk.tar.gz" "$url"
           mkdir -p "$RUNNER_TEMP/jdk"
           tar -xzf /tmp/jdk.tar.gz -C "$RUNNER_TEMP/jdk" --strip-components=1
-          echo "$RUNNER_TEMP/jdk/Contents/Home" >> "$GITHUB_ENV" 2>/dev/null || true
+          if [[ "${{ runner.os }}" == "macOS" ]]; then
+            echo "JAVA_HOME=$RUNNER_TEMP/jdk/Contents/Home" >> "$GITHUB_ENV"
+            echo "$RUNNER_TEMP/jdk/Contents/Home/bin" >> "$GITHUB_PATH"
+          else
+            echo "JAVA_HOME=$RUNNER_TEMP/jdk" >> "$GITHUB_ENV"
+            echo "$RUNNER_TEMP/jdk/bin" >> "$GITHUB_PATH"
+          fi
       - name: Install exact Maven 3.10.0
         shell: bash
         run: |
@@ -49,15 +55,6 @@ jobs:
           mkdir -p "$RUNNER_TEMP/maven"
           tar -xzf /tmp/maven.tar.gz -C "$RUNNER_TEMP/maven" --strip-components=1
           echo "$RUNNER_TEMP/maven/bin" >> "$GITHUB_PATH"
-      - name: Configure Java for Maven
-        shell: bash
-        run: |
-          if [[ "${{ runner.os }}" == "macOS" ]]; then
-            echo "JAVA_HOME=$RUNNER_TEMP/jdk/Contents/Home" >> "$GITHUB_ENV"
-          else
-            echo "JAVA_HOME=$RUNNER_TEMP/jdk" >> "$GITHUB_ENV"
-          fi
-          echo "$JAVA_HOME/bin" >> "$GITHUB_PATH" 2>/dev/null || true
       - name: Format
         run: cargo fmt --all -- --check
       - name: Clippy
