@@ -16,10 +16,15 @@ includes the shared wire-only `ske-cir` crate through a path dependency. No
 ## MIR compiler
 
 `compiler-pin.toml` records the separate, unstable MIR producer identity.
-The tested producer is `rustc 1.101.0-nightly (4ebd25825 2026-10-15)`, full hash
-`4ebd258257737d5b7635c116fa7d281627a7e937`, LLVM 23.1.4.
+The tested producer is `rustc 1.101.0-nightly (7df81381d 2026-10-14)`, full hash
+`7df81381d027710708209f36b98d11b1c88f8d2e`, LLVM 23.1.4.
 No `rustc-dev` is needed: the adapter requests actual MIR with source span comments
 using `-Zunpretty=mir -Zmir-opt-level=0 -Zmir-include-spans=yes`.
+
+The pin uses the **dated** `nightly-2026-10-15` distribution so
+`rustup toolchain install nightly-2026-10-15` (as CI does) reproduces this exact
+build on any machine. Moving `nightly` was deliberately not pinned: moving
+channels are not reproducible. The adapter tests pass on the dated build.
 
 Discovery checks existing `nightly-2026-10-15` and `nightly` installations and
 verifies the **full** hash and release before compiling studied sources. An alias
@@ -28,15 +33,8 @@ selects an explicit existing compiler and still requires the same hash/release.
 An incompatible/missing compiler produces a framed
 `AdapterError{code:"TOOLCHAIN_MISMATCH"}` and exits 3.
 
-No setup script installs or updates any toolchain/component. On this machine,
-the moving `nightly` alias already has the tested hash; a subsequently observed
-`nightly-2026-10-15` alias has commit `7df81381d` (2026-10-14), and is correctly
-rejected. Rustup distribution dates and compiler commit dates differ. Do **not**
-blindly install the date written in a compiler version banner. On another machine,
-obtain the owner's approval before installing anything, verify the distribution's
-`rustc -vV` against the pinned full hash, then set `SKE_RUSTC` explicitly.
-This distribution-date reconciliation remains a portability blocker, not a
-validated Linux/macOS toolchain matrix.
+No setup script installs or updates any toolchain/component beyond what the
+operator explicitly runs (`rustup toolchain install nightly-2026-10-15` on CI).
 
 ## IPC
 

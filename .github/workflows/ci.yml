@@ -10,6 +10,10 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install pinned Rust toolchain
         run: rustup show
+      - name: Install pinned nightly MIR producer
+        run: rustup toolchain install nightly-2026-10-15
+        env:
+          RUSTUP_MAX_RETRIES: "10"
       - name: Install system Z3 on Linux
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libz3-dev z3 pkg-config
@@ -20,6 +24,40 @@ jobs:
         with:
           go-version: '1.27.1'
           cache-dependency-path: adapters/go/go.sum
+      - name: Install exact JDK 24.0.1
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "${{ runner.os }}-${{ runner.arch }}" in
+            Linux-X64)    jdk="OpenJDK24U-jdk_x64_linux_hotspot_24.0.1_9.tar.gz" ;;
+            Linux-ARM64)  jdk="OpenJDK24U-jdk_aarch64_linux_hotspot_24.0.1_9.tar.gz" ;;
+            macOS-X64)    jdk="OpenJDK24U-jdk_x64_mac_hotspot_24.0.1_9.tar.gz" ;;
+            macOS-ARM64)  jdk="OpenJDK24U-jdk_aarch64_mac_hotspot_24.0.1_9.tar.gz" ;;
+            *) echo "unsupported runner ${{ runner.os }}/${{ runner.arch }}"; exit 1 ;;
+          esac
+          url="https://github.com/adoptium/temurin24-binaries/releases/download/jdk-24.0.1%2B9/${jdk}"
+          curl -fsSL -o "/tmp/jdk.tar.gz" "$url"
+          mkdir -p "$RUNNER_TEMP/jdk"
+          tar -xzf /tmp/jdk.tar.gz -C "$RUNNER_TEMP/jdk" --strip-components=1
+          echo "$RUNNER_TEMP/jdk/Contents/Home" >> "$GITHUB_ENV" 2>/dev/null || true
+      - name: Install exact Maven 3.10.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/maven.tar.gz \
+            "https://archive.apache.org/dist/maven/maven-3/3.10.0/binaries/apache-maven-3.10.0-bin.tar.gz"
+          mkdir -p "$RUNNER_TEMP/maven"
+          tar -xzf /tmp/maven.tar.gz -C "$RUNNER_TEMP/maven" --strip-components=1
+          echo "$RUNNER_TEMP/maven/bin" >> "$GITHUB_PATH"
+      - name: Configure Java for Maven
+        shell: bash
+        run: |
+          if [[ "${{ runner.os }}" == "macOS" ]]; then
+            echo "JAVA_HOME=$RUNNER_TEMP/jdk/Contents/Home" >> "$GITHUB_ENV"
+          else
+            echo "JAVA_HOME=$RUNNER_TEMP/jdk" >> "$GITHUB_ENV"
+          fi
+          echo "$JAVA_HOME/bin" >> "$GITHUB_PATH" 2>/dev/null || true
       - name: Format
         run: cargo fmt --all -- --check
       - name: Clippy

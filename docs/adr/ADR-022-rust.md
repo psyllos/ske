@@ -24,17 +24,16 @@ components without the machine owner's consent is forbidden.
 `adapters/rust/rust-toolchain.toml` pins **adapter implementation compilation** to
 installed 1.99.0. `adapters/rust/compiler-pin.toml` separately pins the **studied MIR
 producer** release 1.101.0-nightly and full commit
-`4ebd258257737d5b7635c116fa7d281627a7e937` (compiler commit date 2026-10-15).
+`7df81381d027710708209f36b98d11b1c88f8d2e` (compiler commit date 2026-10-14).
 The producer is verified at runtime even when selected by `SKE_RUSTC`.
 Mismatch is framed `TOOLCHAIN_MISMATCH`, readable stderr, exit 3.
 
-The initially requested `nightly-2026-10-15` distribution name was found to have a
-different compiler hash (`7df81381d`, commit date 2026-10-14). Existing `nightly`
-has the tested exact hash. Discovery only accepts a candidate after verification;
-the name is not an identity. No installation was requested or performed by this
-worker. Reconcile the actual rustup distribution date before claiming a portable
-setup or compiler compatibility matrix. An explicitly supplied matching
-`SKE_RUSTC` is reproducible by identity today, not by an unverified date alone.
+The pin uses the **dated** `nightly-2026-10-15` distribution name so that
+`rustup toolchain install nightly-2026-10-15` is reproducible on any machine
+(CI included). An earlier pin pointed at moving `nightly` hash
+`4ebd25825`; moving channels are not reproducible, so the tested dated build
+was adopted and the adapter tests re-run green on it. Discovery only accepts
+a candidate after verification; the name is not an identity.
 
 ## Contract and safety
 

@@ -6,7 +6,7 @@ use std::{
 };
 
 pub const PIN: &str = "nightly-2026-10-15";
-pub const HASH: &str = "4ebd258257737d5b7635c116fa7d281627a7e937";
+pub const HASH: &str = "7df81381d027710708209f36b98d11b1c88f8d2e";
 pub const RELEASE: &str = "1.101.0-nightly";
 
 #[derive(Debug)]
