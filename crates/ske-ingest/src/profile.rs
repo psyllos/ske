@@ -1,4 +1,4 @@
-//! Strict effective Go build profiles; canonical JSON is the wire representation.
+//! Strict language-specific build profiles; canonical JSON is the wire representation.
 use crate::{err, Result};
 use serde_json::{json, Value};
 use std::{
@@ -94,6 +94,163 @@ fn targets_with_timeout(mut command: Command, timeout: Duration) -> Result<Vec<u
     result
 }
 
+/// Reject a path that could escape the canonical repository root.
+/// Lexical containment only: the adapter is responsible for resolving interior
+/// symlinks within the root and for refusing to read, compile or execute
+/// anything outside it. This closes profile-level escapes (absolute paths or
+/// `..` segments) before consent and before any adapter subprocess starts.
+fn reject_escaping(value: &str, what: &str) -> Result<()> {
+    let bad = |message: &str| err("E_USAGE", format!("{what} {value:?}: {message}"));
+    if value.contains('\0') {
+        return Err(bad("NUL byte"));
+    }
+    if value.contains('\\') {
+        return Err(bad("backslash is not a Unix path separator"));
+    }
+    if value.starts_with('/') {
+        return Err(bad("absolute path escapes the repository"));
+    }
+    let bytes = value.as_bytes();
+    if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+        return Err(bad("drive/prefix path is absolute"));
+    }
+    for component in value.split('/') {
+        if component.is_empty() || component == "." || component == ".." {
+            return Err(bad("empty, current or parent path segment"));
+        }
+    }
+    Ok(())
+}
+
+/// Validate that all profile path-bearing fields stay inside the canonical root.
+/// `profile_json` must already be the normalized canonical profile. Existence is
+/// not required here: an adapter that only inventories declared sources/classes
+/// may legitimately run with a source-only profile; the adapter itself must fail
+/// cleanly on a missing entry. Java classpath entries are separate array items,
+/// so a combined classpath string with separators or wildcards is rejected as
+/// ambiguous rather than silently split.
+pub fn validate_contained(
+    language: crate::Language,
+    profile_json: &str,
+    root: &Path,
+) -> Result<()> {
+    let profile: Value =
+        serde_json::from_str(profile_json).map_err(|e| err("E_USAGE", e.to_string()))?;
+    let object = profile
+        .as_object()
+        .ok_or_else(|| err("E_USAGE", "profile must be an object"))?;
+    match language {
+        crate::Language::Go => {}
+        crate::Language::Rust => {
+            for field in ["entry", "target"] {
+                match object.get(field) {
+                    Some(Value::String(s)) if !s.is_empty() => reject_escaping(s, field)?,
+                    _ => {}
+                }
+            }
+        }
+        crate::Language::Java => {
+            for field in ["class_path", "source_roots"] {
+                let items = object
+                    .get(field)
+                    .and_then(Value::as_array)
+                    .ok_or_else(|| err("E_USAGE", format!("{field} must be an array")))?;
+                for item in items {
+                    let value = item
+                        .as_str()
+                        .ok_or_else(|| err("E_USAGE", format!("{field} must be strings")))?;
+                    reject_escaping(value, field)?;
+                    if value.contains([':', ';', '*']) {
+                        return Err(err(
+                            "E_USAGE",
+                            format!("{field} {value:?}: classpath separator or wildcard is ambiguous; use separate entries"),
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    // The root is already canonicalized by the caller; a validated relative path
+    // joined to it cannot contain parent or absolute segments.
+    let _ = root;
+    Ok(())
+}
+
+pub fn normalize_for(language: crate::Language, input: Option<&str>) -> Result<String> {
+    if language == crate::Language::Go {
+        return normalize(input);
+    }
+    if input.is_some_and(|input| input.len() > MAX_PROFILE_BYTES) {
+        return Err(err("E_USAGE", "profile exceeds 1 MiB"));
+    }
+    let mut profile = match language {
+        crate::Language::Rust => json!({
+            "profile_version":1,"language":"rust","target":null,
+            "features":[],"cfg":[],"entry":"src/lib.rs"
+        }),
+        crate::Language::Java => json!({
+            "profile_version":1,"language":"java","class_path":["target/classes"],
+            "source_roots":["src/main/java"],"target_release":17
+        }),
+        crate::Language::Go => unreachable!(),
+    };
+    if let Some(input) = input {
+        let supplied: Value =
+            serde_json::from_str(input).map_err(|e| err("E_USAGE", e.to_string()))?;
+        let object = supplied
+            .as_object()
+            .ok_or_else(|| err("E_USAGE", "profile must be an object"))?;
+        for (key, value) in object {
+            if !profile.as_object().unwrap().contains_key(key) {
+                return Err(err("E_USAGE", format!("unknown profile key: {key}")));
+            }
+            profile[key] = value.clone();
+        }
+    }
+    if profile["profile_version"].as_u64() != Some(1) || profile["language"] != language.as_str() {
+        return Err(err("E_USAGE", "invalid profile version/language"));
+    }
+    let arrays: &[&str] = match language {
+        crate::Language::Rust => &["features", "cfg"],
+        crate::Language::Java => &["class_path", "source_roots"],
+        crate::Language::Go => unreachable!(),
+    };
+    for name in arrays {
+        let values = profile[*name]
+            .as_array()
+            .ok_or_else(|| err("E_USAGE", format!("{name} must be an array")))?;
+        if values
+            .iter()
+            .any(|value| value.as_str().is_none_or(str::is_empty))
+        {
+            return Err(err(
+                "E_USAGE",
+                format!("{name} must contain nonempty strings"),
+            ));
+        }
+    }
+    match language {
+        crate::Language::Rust => {
+            if (!profile["target"].is_null()
+                && profile["target"].as_str().is_none_or(str::is_empty))
+                || profile["entry"].as_str().is_none_or(str::is_empty)
+            {
+                return Err(err("E_USAGE", "invalid Rust target/entry"));
+            }
+        }
+        crate::Language::Java => {
+            if profile["target_release"]
+                .as_u64()
+                .is_none_or(|v| v == 0 || v > u32::MAX as u64)
+            {
+                return Err(err("E_USAGE", "target_release must be a positive u32"));
+            }
+        }
+        crate::Language::Go => unreachable!(),
+    }
+    ske_common::canonical_json(&profile)
+}
+
 pub fn normalize(input: Option<&str>) -> Result<String> {
     if input.is_some_and(|input| input.len() > MAX_PROFILE_BYTES) {
         return Err(err("E_USAGE", "profile exceeds 1 MiB"));
@@ -184,6 +341,65 @@ pub fn normalize(input: Option<&str>) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn multilang_profiles_are_strict_canonical_and_independent_of_go_tool() {
+        use crate::Language::{Java, Rust};
+        for (language, expected) in [
+            (
+                Rust,
+                json!({"profile_version":1,"language":"rust","target":null,
+                "features":[],"cfg":[],"entry":"src/lib.rs"}),
+            ),
+            (
+                Java,
+                json!({"profile_version":1,"language":"java",
+                "class_path":["target/classes"],"source_roots":["src/main/java"],
+                "target_release":17}),
+            ),
+        ] {
+            let canonical = normalize_for(language, None).unwrap();
+            assert_eq!(canonical, ske_common::canonical_json(&expected).unwrap());
+            assert_eq!(
+                canonical,
+                normalize_for(language, Some(&expected.to_string())).unwrap()
+            );
+            for invalid in [
+                r#"{"unknown":true}"#,
+                r#"{"profile_version":2}"#,
+                r#"{"language":"go"}"#,
+                "[]",
+                "null",
+            ] {
+                assert_eq!(
+                    normalize_for(language, Some(invalid)).unwrap_err().code,
+                    "E_USAGE"
+                );
+            }
+            assert!(normalize_for(language, Some(&" ".repeat(MAX_PROFILE_BYTES + 1))).is_err());
+        }
+        for invalid in [
+            r#"{"features":[1]}"#,
+            r#"{"cfg":null}"#,
+            r#"{"target":3}"#,
+            r#"{"entry":""}"#,
+        ] {
+            assert!(normalize_for(Rust, Some(invalid)).is_err());
+        }
+        for invalid in [
+            r#"{"class_path":"x"}"#,
+            r#"{"source_roots":[""]}"#,
+            r#"{"target_release":0}"#,
+            r#"{"target_release":17.5}"#,
+        ] {
+            assert!(normalize_for(Java, Some(invalid)).is_err());
+        }
+        // Order in classpaths is semantic; never sort arrays while canonicalizing.
+        let profile = normalize_for(Java, Some(r#"{"class_path":["b","a"]}"#)).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&profile).unwrap()["class_path"],
+            json!(["b", "a"])
+        );
+    }
     #[test]
     fn profile_tool_timeout_kills_descendant_holding_stdout() {
         let mut command = Command::new("/bin/sh");

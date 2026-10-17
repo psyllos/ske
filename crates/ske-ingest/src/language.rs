@@ -1,6 +1,23 @@
-//! Go ingestion uses independently committed units; CIR fixtures remain atomic.
+//! Adapter ingestion uses independently committed units; CIR fixtures remain atomic.
 use super::*;
 use adapter::RunLimits;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Language {
+    Go,
+    Rust,
+    Java,
+}
+
+impl Language {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Go => "go",
+            Self::Rust => "rust",
+            Self::Java => "java",
+        }
+    }
+}
 
 pub struct GoOptions<'a> {
     pub repo: &'a Path,
@@ -11,9 +28,28 @@ pub struct GoOptions<'a> {
     pub redact: bool,
 }
 
+/// Common adapter options, retained as an alias for Go API compatibility.
+pub type IngestOptions<'a> = GoOptions<'a>;
+
 pub fn ingest_go(storage: &Storage, options: &GoOptions<'_>) -> Result<Value> {
+    ingest_language(storage, Language::Go, options)
+}
+
+pub fn ingest_rust(storage: &Storage, options: &IngestOptions<'_>) -> Result<Value> {
+    ingest_language(storage, Language::Rust, options)
+}
+
+pub fn ingest_java(storage: &Storage, options: &IngestOptions<'_>) -> Result<Value> {
+    ingest_language(storage, Language::Java, options)
+}
+
+pub fn ingest_language(
+    storage: &Storage,
+    language: Language,
+    options: &IngestOptions<'_>,
+) -> Result<Value> {
     options.limits.validate()?;
-    let profile = crate::profile::normalize(Some(options.profile_json))?;
+    let profile = crate::profile::normalize_for(language, Some(options.profile_json))?;
     let root = options
         .repo
         .canonicalize()
@@ -21,6 +57,9 @@ pub fn ingest_go(storage: &Storage, options: &GoOptions<'_>) -> Result<Value> {
     if !root.is_dir() {
         return Err(err("E_USAGE", "--repo must be a directory"));
     }
+    // Profile paths must stay inside the repository before consent or any
+    // adapter subprocess is granted, closing absolute/.. escapes.
+    crate::profile::validate_contained(language, &profile, &root)?;
     let db = &storage.conn;
     // The discovery result is deliberately committed independently of extraction.
     let snapshot = transaction(db, || {
@@ -52,7 +91,7 @@ pub fn ingest_go(storage: &Storage, options: &GoOptions<'_>) -> Result<Value> {
         .map_err(sql)?;
         Ok(db.last_insert_rowid())
     })?;
-    match adapter::list_units(options.adapter, &root, &profile, options.limits) {
+    match adapter::list_units_for(language, options.adapter, &root, &profile, options.limits) {
         Ok(units) if !units.is_empty() => {
             for unit in units {
                 let mut header = None;
@@ -72,6 +111,12 @@ pub fn ingest_go(storage: &Storage, options: &GoOptions<'_>) -> Result<Value> {
                                         content: Some(Content::Header(h)),
                                     }) = &record
                                     {
+                                        if h.language != language.as_str() {
+                                            return Err(err(
+                                                "E_TYPE_MISMATCH",
+                                                "adapter header language differs from selected ingest language",
+                                            ));
+                                        }
                                         if h.cir_major == 1
                                             && matches!(h.language.as_str(), "go" | "rust" | "java")
                                         {

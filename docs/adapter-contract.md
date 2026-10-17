@@ -56,3 +56,32 @@ Framing u32 BE, longueur nulle, dépassement et troncature ; major inconnu ;
 diagnostics d'extensions ; rollback des négatifs ; stub externe ; polarité
 inversée ; compteurs et cas d'activation ; pureté stdout et codes de sortie.
 Les commandes de validation et constats d'AC restent à la charge du parent.
+
+## Adaptateurs multilangages v0.6 (en cours)
+
+`ske ingest rust` et `ske ingest java` réutilisent le même transport borné,
+consentement explicite et import transactionnel par unité que Go.
+La découverte et le header doivent correspondre au langage demandé.
+L'import CIR direct reste multilangage. Les champs du profil sont fermés ;
+voir ADR-022-v06-integration pour leurs valeurs par défaut.
+
+L'adaptateur Rust est un workspace indépendant sous `adapters/rust/` :
+`(cd adapters/rust && cargo build)` utilise son propre `rust-toolchain.toml`
+épinglé à 1.99.0. L'exécutable est
+`adapters/rust/target/debug/ske-adapter-rust`. Le producteur MIR est distinct
+et vérifié par version/hash avant extraction ; les crates cœur ne dépendent
+pas de `rustc_private`. Le détail de l'épinglage et de sa limite de
+distribution est dans ADR-022-rust.
+
+Le MIR est produit à partir d'une copie source contrôlée sans exécuter
+Cargo, build.rs ou des proc macros tiers. L'inventaire source est indépendant
+de la passe MIR. Une correspondance absente ou ambiguë n'est pas attestée
+exacte ; les unités Rust restent PARTIAL dans le pilote actuel.
+`TOOLCHAIN_MISMATCH` est une erreur adaptateur encadrée suivie d'exit 3.
+L'environnement du processus enfant reste filtré par le cœur.
+
+L'adaptateur Java est isolé sous `adapters/java/` et lit du bytecode déjà
+compilé ; aucun build du dépôt étudié n'est lancé. Les vérifications réelles
+du launcher, de son identité liée au jar et des exceptions sont requises
+avant validation du lot Java. Les seules compilations permises aux tests
+sont celles des fixtures de confiance SKE.

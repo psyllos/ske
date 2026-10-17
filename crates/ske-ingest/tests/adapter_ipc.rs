@@ -80,6 +80,117 @@ fn limits() -> RunLimits {
         ..RunLimits::default()
     }
 }
+
+#[test]
+fn multilang_discovery_and_header_dispatch_are_checked_independently() {
+    use ske_cir::proto::{EndUnit, Header, UnitDef};
+    use ske_ingest::{adapter::list_units_for, ingest_language, IngestOptions, Language};
+    for language in [Language::Rust, Language::Java] {
+        let descriptor = adapter_response::Body::Unit(UnitDescriptor {
+            unit_key: "unit".into(),
+            language: language.as_str().into(),
+            source_paths: vec![],
+        });
+        let child = ChildFixture::new(&frames(vec![descriptor, done()]), "cat response");
+        assert_eq!(
+            list_units_for(
+                language,
+                &child.executable,
+                child.dir.path(),
+                "{}",
+                &limits()
+            )
+            .unwrap()
+            .len(),
+            1
+        );
+        assert!(
+            child.list(&limits()).is_err(),
+            "Go API must reject other languages"
+        );
+
+        for matches in [true, false] {
+            let child = ChildFixture::new(
+                &fs::read(child.dir.path().join("response")).unwrap(),
+                "if test -f listed; then cat extract; else touch listed; cat response; fi",
+            );
+            let emitted = if matches { language.as_str() } else { "go" };
+            let records = vec![
+                Content::Header(Header {
+                    cir_major: 1,
+                    language: emitted.into(),
+                    adapter_name: "test".into(),
+                    adapter_version: "1".into(),
+                    toolchain_version: "test".into(),
+                    semantic_profile: "{}".into(),
+                    build_fingerprint: "test".into(),
+                    capability_flags: vec!["TEST_CAPABILITY".into()],
+                    ..Default::default()
+                }),
+                Content::UnitDef(UnitDef {
+                    unit_id: "u".into(),
+                    unit_key: "unit".into(),
+                    language: emitted.into(),
+                }),
+                Content::EndUnit(EndUnit {
+                    unit_id: "u".into(),
+                    inventory_status: "COMPLETE".into(),
+                    ..Default::default()
+                }),
+            ];
+            fs::write(
+                child.dir.path().join("extract"),
+                frames(
+                    records
+                        .into_iter()
+                        .map(|content| {
+                            adapter_response::Body::Record(Record {
+                                content: Some(content),
+                            })
+                        })
+                        .collect(),
+                ),
+            )
+            .unwrap();
+            let storage = Storage::open(child.dir.path().join("db")).unwrap();
+            let result = ingest_language(
+                &storage,
+                language,
+                &IngestOptions {
+                    repo: child.dir.path(),
+                    adapter: &child.executable,
+                    profile_json: "{}",
+                    limits: &limits(),
+                    repository: None,
+                    redact: false,
+                },
+            )
+            .unwrap();
+            assert_eq!(result["status"], if matches { "CLOSED" } else { "ABORTED" });
+            let (stored_language, profile, flags): (String, String, String) = storage
+                .conn
+                .query_row(
+                    "SELECT language,semantic_profile,capability_flags FROM compilation_units",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .unwrap();
+            if matches {
+                assert_eq!(stored_language, emitted);
+                assert_eq!(profile, "{}");
+                assert_eq!(flags, r#"["TEST_CAPABILITY"]"#);
+            } else {
+                assert_eq!(stored_language, "unknown");
+                let message: String = storage
+                    .conn
+                    .query_row("SELECT message FROM diagnostics", [], |r| r.get(0))
+                    .unwrap();
+                assert!(message.contains("E_TYPE_MISMATCH"));
+            }
+        }
+    }
+}
+
 #[test]
 fn adapter_list_units_request_eof_and_clean_environment() {
     let child = ChildFixture::new(&frames(vec![unit(), done()]),
@@ -103,6 +214,22 @@ fn adapter_list_units_rejects_missing_done_wrong_body_duplicate_done_and_error()
         (vec![unit()], "E_RECORD_ORDER"),
         (vec![done(), done()], "E_RECORD_ORDER"),
         (vec![done(), unit()], "E_RECORD_ORDER"),
+        (
+            vec![adapter_response::Body::Unit(UnitDescriptor {
+                unit_key: "go:example@linux/amd64".into(),
+                language: "rust".into(),
+                source_paths: vec![],
+            })],
+            "E_TYPE_MISMATCH",
+        ),
+        (
+            vec![adapter_response::Body::Unit(UnitDescriptor {
+                unit_key: "".into(),
+                language: "go".into(),
+                source_paths: vec![],
+            })],
+            "E_RECORD_ORDER",
+        ),
         (
             vec![adapter_response::Body::Record(Record::default())],
             "E_RECORD_ORDER",

@@ -15,7 +15,8 @@ Ne pas commencer v0.2 avant les 42 AC v0.1 PASS ou dérogation approuvée.
 | v0.3 — analyse symbolique et preuves | DONE | 29 AC PASS ; non-régression 42 AC v0.1 + 25 AC v0.2 ; voir validation/v0.3.md et le dernier journal |
 | v0.4 — analyse interprocédurale | DONE | 14 AC PASS ; 42 AC v0.1 + 25 AC v0.2 + 29 AC v0.3 PASS ; voir validation/v0.4.md et les frontières de précision dans soundness-and-limits.md. Correctif SIGINT, parsing SMT par lots et priorité d'erreur adaptateur intégrés (CI Linux/macOS verte) |
 | v0.5 — connaissance comportementale | DONE | 13 AC PASS ; non-régression 42 AC v0.1 + 25 AC v0.2 + 29 AC v0.3 + 14 AC v0.4 PASS. Voir validation/v0.5.md, le dernier journal et les frontières dans soundness-and-limits.md |
-| v0.6–v0.7 | NOT_STARTED | Hors périmètre de la demande actuelle |
+| v0.6 — adaptateurs Rust et Java | 13/14 AC PASS, gel CIR à décider | Adaptateurs Rust/Java réels, ingestion/CLI multilangage, 13 AC PASS sur `python3 scripts/validate-v06.py` ; 123 AC antérieurs rejoués. AC-0.6-13 attend la pose du tag `cir-v1.0-frozen`, exige commit + autorisation. Limites §10.1 documentées par ADR. Voir validation/v0.6.md et dernière section du journal |
+| v0.7 | NOT_STARTED | Hors périmètre de la demande actuelle |
 
 ## Fonctionnalités §1.1
 
@@ -34,7 +35,7 @@ Ne pas commencer v0.2 avant les 42 AC v0.1 PASS ou dérogation approuvée.
 | Résumés interprocéduraux | DONE (v0.4, périmètre documenté) | `ske-summary`, substitution inter-arènes, retours multiples, globales et deltas connus ; persistance summary_* ; effets non modélisés explicites |
 | Modèle de comportements | DONE (v0.5) | Rendu R1–R6 §7.2, déduplication conservatrice, reconstruction behavior_scenarios/cases/outcomes, scénario/capacité §7.5, pagination et rollback ; 13 AC PASS |
 | Connaissance fonctionnelle/règles | DONE (v0.5) | `ske behaviors reconstruct`, `ske rules list --with-evidence`, `ske rules stale-check` (§11.2) ; evidence DERIVED_FROM/GUARD_OUTCOME/RESULT_SITE ancrée au snapshot |
-| Adaptateurs Rust/Java | NOT_STARTED | Interdits dans la première instruction §24 |
+| Adaptateurs Rust/Java | DONE (v0.6, périmètre borné) | Pousseurs réels MIR (Rust) et SootUp/Jimple (Java) isolés, mêmes services ingest/inspect/branches ; inconnus et mappings partiels explicites, unités PARTIAL, audit LGPL Java requis avant redistribution |
 | API/MCP/LLM | NOT_STARTED | Aucune donnée envoyée à un LLM |
 | Analyse incrémentale | DONE (v0.5, périmètre borné) | Copie-sur-réutilisation des résumés (§13) entre snapshots du même dépôt ; clé canonique §4.6 indépendante des ids de flux/spans, config de snapshot, lignes analysis_dependencies, metrics summaries_reused/computed |
 

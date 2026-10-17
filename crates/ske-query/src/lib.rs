@@ -2,7 +2,7 @@
 use rusqlite::{params, types::ValueRef, Connection, Params};
 use serde_json::{json, Value};
 use ske_common::{Error, Result};
-pub use ske_ingest::{adapter::RunLimits, profile, GoOptions};
+pub use ske_ingest::{adapter::RunLimits, profile, GoOptions, IngestOptions, Language};
 use ske_storage::Storage;
 use std::path::{Path, PathBuf};
 
@@ -107,6 +107,19 @@ impl Query {
     }
     pub fn ingest_go(&self, options: &ske_ingest::GoOptions<'_>) -> Result<Value> {
         ske_ingest::ingest_go(&self.storage, options)
+    }
+    pub fn ingest_language(
+        &self,
+        language: Language,
+        options: &IngestOptions<'_>,
+    ) -> Result<Value> {
+        ske_ingest::ingest_language(&self.storage, language, options)
+    }
+    pub fn ingest_rust(&self, options: &IngestOptions<'_>) -> Result<Value> {
+        self.ingest_language(Language::Rust, options)
+    }
+    pub fn ingest_java(&self, options: &IngestOptions<'_>) -> Result<Value> {
+        self.ingest_language(Language::Java, options)
     }
     pub fn analyze(
         &mut self,

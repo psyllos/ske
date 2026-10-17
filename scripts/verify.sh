@@ -68,4 +68,8 @@ assert len(rows) == 2 and rows[0][0] != rows[1][0] and rows[0][1:] == rows[1][1:
 PY
 # v0.5: behaviors require the Go adapter build; behavior tests exercise the
 # full reconstruct -> rules -> evidence pipeline against the trusted adapter.
-printf 'VERIFY OK v0.5\n'
+# v0.6: the multilang acceptance tests (crates/ske-cli/tests/multilang.rs) run
+# inside `cargo test --workspace` above and build + exercise the isolated Rust
+# and Java adapters against the unchanged core. The final marker declares the
+# validated milestone; the v0.6 harness relies on it via SKE_EXPECT_VERIFY_VERSION.
+printf 'VERIFY OK v0.6\n'

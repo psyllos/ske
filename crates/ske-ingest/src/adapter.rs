@@ -330,6 +330,16 @@ pub fn list_units(
     profile: &str,
     limits: &RunLimits,
 ) -> Result<Vec<UnitDescriptor>> {
+    list_units_for(crate::Language::Go, executable, root, profile, limits)
+}
+
+pub fn list_units_for(
+    language: crate::Language,
+    executable: &Path,
+    root: &Path,
+    profile: &str,
+    limits: &RunLimits,
+) -> Result<Vec<UnitDescriptor>> {
     run(
         executable,
         AdapterRequest {
@@ -352,12 +362,21 @@ pub fn list_units(
                         if descriptor_bytes > 16 * 1024 * 1024 {
                             return Err(err("E_ADAPTER_LIMIT", "discovery exceeds 16 MiB"));
                         }
-                        if unit.unit_key.is_empty()
-                            || unit.language != "go"
-                            || units.last().is_some_and(|last: &UnitDescriptor| {
-                                discovery_order(&last.unit_key) >= discovery_order(&unit.unit_key)
-                            })
-                        {
+                        if unit.unit_key.is_empty() {
+                            return Err(err(
+                                "E_RECORD_ORDER",
+                                "unit descriptors must have a nonempty unit key",
+                            ));
+                        }
+                        if unit.language != language.as_str() {
+                            return Err(err(
+                                "E_TYPE_MISMATCH",
+                                "unit descriptor language differs from selected ingest language",
+                            ));
+                        }
+                        if units.last().is_some_and(|last: &UnitDescriptor| {
+                            discovery_order(&last.unit_key) >= discovery_order(&unit.unit_key)
+                        }) {
                             return Err(err(
                                 "E_RECORD_ORDER",
                                 "unit descriptors must be unique and sorted by package import path",

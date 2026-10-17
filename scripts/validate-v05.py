@@ -130,14 +130,18 @@ def main():
     check(13, "cargo test -p ske-storage", ["migration_0002_capabilities", "schema_tables_match", "migrations_idempotent_wal_and_checksum"])
 
     def regression(text):
-        assert "VERIFY OK v0.5" in text
+        expected_version = os.environ.get("SKE_EXPECT_VERIFY_VERSION", "v0.5")
+        assert f"VERIFY OK {expected_version}" in text
         # Non-régression complète per AC-0.5-12: v0.1 (42), v0.2 (25), v0.3 (29),
         # v0.4 (14) all PASS.
         for version, expected in [("v01", 42), ("v02", 25), ("v03", 29), ("v04", 14)]:
             data = json.loads((ROOT / f"target/validation-{version}/results.json").read_text())
             assert len(data) == expected and all(r["status"] == "PASS" for r in data), version
 
-    check(12, "./scripts/verify.sh && SKE_INHERIT_VERIFY=1 SKE_EXPECT_VERIFY_VERSION=v0.5 python3 scripts/validate-v04.py",
+    expected_version = os.environ.get("SKE_EXPECT_VERIFY_VERSION", "v0.5")
+    if not re.fullmatch(r"v0\.[1-6]", expected_version):
+        parser.error("SKE_EXPECT_VERIFY_VERSION must name v0.1 through v0.6")
+    check(12, f"./scripts/verify.sh && SKE_INHERIT_VERIFY=1 SKE_EXPECT_VERIFY_VERSION={expected_version} python3 scripts/validate-v04.py",
           validator=regression)
     invocation = "python3 scripts/validate-v05.py" + (f" --only {args.only}" if args.only else "")
     rows = ["# Validation v0.5 — en cours", "", f"Invocation : `{invocation}`.",

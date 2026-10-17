@@ -1218,3 +1218,167 @@ Le commit de cette consignation ne change que la documentation ; le code
 reste identique au candidat validé. L'autorisation `/land`, précisée par le
 choix de conserver l'architecture de main et de porter les seuls correctifs
 manquants, reste la portée de cette opération.
+
+## Démarrage v0.6 — adaptateurs multilangages
+
+Demande explicite de psyllos : enchaîner sur v0.6, déléguer les lots
+indépendants, conserver l'état durable ; aucun push ni merge partagé.
+Base observée : `17036c0` (main), arbre propre avant intervention.
+v0.5 est DONE, malgré les anciennes consignes AGENTS restées à v0.4 ;
+lecture du statut, du dernier journal, des validations v0.1/v0.2/v0.5,
+de la réconciliation v0.5 et du blocage v0.4 résolu.
+Les résultats historiques ne sont pas revendiqués comme nouvelles exécutions.
+
+Répartition (threads Delta, aucun résultat automatiquement intégré) :
+
+- Rust : `ksQQo4Y0JcCDTI2Q-JZivKxVAZLOAB2EtJIBxBDZiRjivQ9OQqTS_tRBC-14`,
+  `adapters/rust/`, fixture exacte, ADR et `docs/worker-rust-v06.md`.
+- Java : `ksQQo4Y0JcCDTI2Q-JZivKxVAZLOAB2G1JIBxBDZiRjivQ9OQqTS_tRBC-14`,
+  `adapters/java/`, trois fixtures exactes, ADR/licences et rapport dédié.
+- Ingestion/CLI : `ksQQo4Y0JcCDTI2Q-JZivKxVAZLOAB2TKJIBxBDZiRjivQ9OQqTS_tRBC-14`,
+  mutualisation du lanceur existant, profils fermés et consentement.
+- Coordinateur : documentation, intégration, vérifications croisées,
+  orchestration des AC et revue indépendante après intégration.
+
+Décisions d'interface :
+
+- Protocole inchangé `AdapterRequest/AdapterResponse`, préfixe u32 big-endian,
+  champs `project_root` et `build_profile_json` ; aucune migration normative.
+- Rust : profil plat `profile_version=1`, `language="rust"`, `target=null`,
+  `features=[]`, `cfg=[]`, `entry="src/lib.rs"`.
+- Java : profil plat `profile_version=1`, `language="java"`,
+  `class_path=["target/classes"]`, `source_roots=["src/main/java"]`,
+  `target_release=17`. Lecture de bytecode précompilé, jamais lancement du
+  build du dépôt étudié. Compilation des seules fixtures de confiance permise.
+- Adaptateurs isolés, pas de fuite de types compilateur dans le cœur.
+  Mappings incomplets signalés PARTIAL, jamais des constantes de fixtures.
+- Rust local : nightly `1.101.0-nightly (4ebd25825 2026-10-15)` disponible,
+  mais rustc-dev absent. Piste retenue : MIR textuel réel produit par rustc
+  épinglé, sans Cargo/build.rs/proc macros ; fragilité et attribution de
+  provenance à documenter par ADR. Aucun composant système installé.
+- Java local : JDK 24.0.1 et Maven présents ; cible bytecode 17 proposée
+  pour compatibilité SootUp. Versions et licences à confirmer dans l'ADR.
+
+Commandes de reconnaissance exécutées : `git status --short` (arbre propre),
+`git log -6 --oneline`, `rustup toolchain list`, `java -version`,
+recherche des AGENTS imbriqués (aucun), inventaire des rapports et modules.
+Aucun test v0.6 exécuté à ce point. Prochaine étape : récupérer les lots,
+vérifier les extractions réelles puis les 14 AC et les 123 AC antérieurs.
+Le tag de gel CIR reste interdit avant ces preuves.
+
+### Orchestration v0.6 récupérée et testée
+
+Lot `ksQQo4Y0JcCDTI2Q-JZivKxVAZLOAB2xg5IBxBDZiRjivQ9OQqTS_tRBC-14`
+intégré via le mécanisme Delta (aucune fusion Git partagée).
+`scripts/validate-v06.py` conserve les 14 AC, commandes prévues/exécutées,
+logs et prérequis ; rejette les filtres Cargo sans tests et vérifie les
+identités des 123 AC de régression. Le contrôle du tag ne le crée pas.
+Le validateur v0.5 propage désormais `SKE_EXPECT_VERIFY_VERSION` au lieu
+d'imposer v0.5, pour permettre une régression sous le futur verify v0.6.
+
+Coordinateur : `python3 -m unittest discover -s scripts -p 'test_validate_v0*.py' -v`
+→ 13 tests unitaires PASS ; `git diff --check` → exit 0.
+Les mentions FAIL/PASS émises par les tests du harness sont des simulations
+unitaires sous exécuteur substitué, pas des AC réellement exécutés.
+Tous les AC v0.6 restent NOT_RUN.
+
+Lot tests E2E délégué à
+`ksQQo4Y0JcCDTI2Q-JZivKxVAZLOAB3GeZIBxBDZiRjivQ9OQqTS_tRBC-14`
+(`crates/ske-cli/tests/multilang.rs`, rapport dédié).
+Il doit comparer des attentes indépendantes avec l'IR réellement ingéré,
+les analyses contraintes et les statuts, sans golden produit par SKE.
+
+### Intégration CLI et tests croisés récupérés
+
+Lots ingestion/CLI et tests E2E intégrés dans le worktree coordinateur.
+L'agent ingestion rapporte 159 tests CLI/ingestion exécutés ; son détail
+reste dans `docs/worker-multilang-v06.md`, sans certification d'AC v0.6.
+Le coordinateur a exécuté :
+
+- `cargo test -p ske-ingest --lib --locked` : 9 PASS.
+- `cargo test -p ske-cli --test multilang --no-run --locked` : compilation
+  réussie uniquement, aucun test E2E exécuté par cette commande.
+
+Le lot tests rapporte une première exécution à 0/12 PASS faute d'adaptateurs
+intégrés. Ce résultat n'est pas masqué. Correction de l'oracle de consentement
+par le coordinateur : chemin normatif à côté de la base (`.ske/consent.json`),
+pas dans le dépôt étudié.
+
+Revue indépendante du lot ingestion confiée à
+`ksQQo4Y0JcCDTI2Q-JZivKxVAZLOAB4bCJIBxBDZiRjivQ9OQqTS_tRBC-14`.
+Point de sûreté signalé au lot Java : le consentement hashant l'exécutable,
+un launcher statique vers un jar mutable ne suffit pas. Exiger une identité
+de launcher liée au hash du jar, et refuser un jar substitué avant la JVM.
+Les réservations mémoire JVM sous la limite Linux doivent aussi être bornées.
+Ces points restent à vérifier sur le lot Java final.
+
+## Intégration des lots Rust/Java, correctifs de revue et campagne v0.6
+
+### Récupération des adaptateurs
+
+Les lots Rust (`e64ee855-…`) et Java (`b3b60235-…`) ont été intégrés dans le
+worktree coordinateur sans fusion Git partagée. L'adaptateur Rust possède son
+propre workspace, lockfile et pin Rust 1.99.0 ; le producteur MIR nightly est
+vérifié par identité complète (l'alias daté local a un hash divergent, voir
+ADR-022-rust). L'adaptateur Java est un projet Maven SootUp/Jimple (cible
+bytecode 17, runtime 24.0.1) dont le launcher généré embarque le SHA-256 du
+jar (consentement non contournable, jar substitué refusé avant la JVM) et des
+régions heap bornées ; audit LGPL dans ADR-022-java.
+
+### Correctifs de revue appliqués par le coordinateur
+
+La revue d'ingestion avait trouvé deux défauts de sûreté. Le lot propriétaire
+ayant épuisé son quota, le coordinateur les a corrigés et régressés :
+
+- `E_TYPE_MISMATCH` distinct pour une unité dont le langage diffère de
+  l'ingestion demandée (auparavant confondu avec `E_RECORD_ORDER`) :
+  `crates/ske-ingest/src/adapter.rs`.
+- `profile::validate_contained(language, profile, root)` : rejette les chemins
+  absolus, préfixes Windows, antislashs, NUL et segments vides/`.`/`..` pour
+  `entry`/`target` (Rust) et `class_path`/`source_roots` (Java), et refuse les
+  wildcards/séparateurs de classpath ambigus ; appelé dans `ingest_language`
+  avant consentement et avant tout sous-processus adaptateur.
+  `crates/ske-ingest/src/profile.rs` + `language.rs`.
+- Régressions : `crates/ske-ingest/tests/profile_containment.rs` (fuites et
+  chemins internes) et cas ajoutés dans `tests/adapter_ipc.rs`.
+
+Commandes exécutées : `cargo test -p ske-ingest --lib --test adapter_ipc
+--locked` (22 PASS dont les deux nouveaux), `cargo test -p ske-ingest --test
+profile_containment` (2 PASS), `cargo fmt --all`, `git diff --check`.
+
+### Tests croisés et oracles
+
+Le lot E2E `crates/ske-cli/tests/multilang.rs` (12 tests) a d'abord exigé deux
+corrections d'oracle faites au coordinateur :
+
+- Considérer `UNDEF` (local/temp MIR non initialisé) : la valeur se propage à
+  travers COPY/PHI et doit échouer bruyamment si une opération consommatrice
+  (branche, arithmétique, retour) la lit. Jamais de valeur devinée.
+- L'invariant « tout outcome source non elided possède un lien IR » était trop
+  strict : Rust déclare honnêtement MATCH/`?` sans activation MIR (unités
+  PARTIAL, diagnostics `SOURCE_MISMATCH`/`SOURCE_ACTIVATION_INCOMPLETE`,
+  jamais `PROVEN_UNREACHABLE`). Le test vérifie désormais que chaque outcome
+  non lié est explicitement diagnostiqué, conformément à AC-0.6-06.
+
+Résultat : `cargo test -p ske-cli --test multilang -- --test-threads=1`
+→ 12 PASS, 0 ignoré.
+
+### Campagne complète v0.6
+
+`python3 scripts/validate-v06.py` : **13 AC PASS, AC-0.6-13 FAIL par
+conception** (gel non posé). AC-0.6-12 rejoue verify.sh (`VERIFY OK v0.6`)
+puis les 123 AC antérieurs : 42 v0.1 + 25 v0.2 + 29 v0.3 + 14 v0.4 + 13 v0.5,
+tous PASS, résultats supprimés puis régénérés sur ce même arbre.
+Logs : `target/validation-v06/` et `target/validation-v0*/`.
+
+AC-0.6-05 à AC-0.6-11 et AC-0.6-14 passent via les tests multilang réels
+(types, comportement croisé Go/Rust/Java, SWITCH/INVOKE, réflexion, mismatch
+Rust, inspect, intégrité SQL/framing, exceptions/finally). Rien n'est committé.
+
+### Gel CIR — laissé volontairement à l'écart
+
+Le tag `cir-v1.0-frozen` n'est pas posé : la condition de réussite est remplie,
+mais l'arbre n'est pas encore commité (un tag sur HEAD antérieur serait
+trompeur) et gel + commit engagent l'avenir du protocole. La décision revient
+au commanditaire, de même que l'autorisation de commit/push réservée par la
+demande. Rapport: `docs/validation/v0.6.md`.

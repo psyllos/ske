@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde_json::{json, Value};
 use ske_common::{Error, Result};
 use ske_query::Query;
@@ -75,28 +75,9 @@ enum Command {
 
 #[derive(Subcommand)]
 enum Ingest {
-    Go {
-        #[arg(long)]
-        repo: PathBuf,
-        #[arg(long)]
-        profile: Option<PathBuf>,
-        #[arg(long, default_value = "target/ske-adapter-go")]
-        adapter: PathBuf,
-        #[arg(long)]
-        yes_run_adapter: bool,
-        #[arg(long, default_value_t = 16 * 1024 * 1024)]
-        max_message_bytes: u64,
-        #[arg(long, default_value_t = 50_000_000)]
-        max_messages: u64,
-        #[arg(long, default_value_t = 600_000)]
-        timeout_ms: u64,
-        #[arg(long, default_value_t = 4096)]
-        max_memory_mb: u64,
-        #[arg(long)]
-        redact: bool,
-        #[arg(long)]
-        require_complete: bool,
-    },
+    Go(AdapterIngest),
+    Rust(AdapterIngest),
+    Java(AdapterIngest),
     Cir {
         #[arg(long, required = true)]
         input: Vec<PathBuf>,
@@ -105,6 +86,30 @@ enum Ingest {
         #[arg(long)]
         require_complete: bool,
     },
+}
+
+#[derive(Args)]
+struct AdapterIngest {
+    #[arg(long)]
+    repo: PathBuf,
+    #[arg(long)]
+    profile: Option<PathBuf>,
+    #[arg(long)]
+    adapter: Option<PathBuf>,
+    #[arg(long)]
+    yes_run_adapter: bool,
+    #[arg(long, default_value_t = 16 * 1024 * 1024)]
+    max_message_bytes: u64,
+    #[arg(long, default_value_t = 50_000_000)]
+    max_messages: u64,
+    #[arg(long, default_value_t = 600_000)]
+    timeout_ms: u64,
+    #[arg(long, default_value_t = 4096)]
+    max_memory_mb: u64,
+    #[arg(long)]
+    redact: bool,
+    #[arg(long)]
+    require_complete: bool,
 }
 #[derive(Subcommand)]
 enum Snapshots {
@@ -204,20 +209,32 @@ fn execute(cli: &Cli) -> Result<(Value, i32)> {
     let value = match &cli.command {
         Command::Init => query.init()?,
         Command::Ingest {
-            command:
-                Ingest::Go {
-                    repo,
-                    profile,
-                    adapter,
-                    yes_run_adapter,
-                    max_message_bytes,
-                    max_messages,
-                    timeout_ms,
-                    max_memory_mb,
-                    redact,
-                    require_complete,
-                },
+            command: command @ (Ingest::Go(_) | Ingest::Rust(_) | Ingest::Java(_)),
         } => {
+            let (language, args) = match command {
+                Ingest::Go(args) => (ske_query::Language::Go, args),
+                Ingest::Rust(args) => (ske_query::Language::Rust, args),
+                Ingest::Java(args) => (ske_query::Language::Java, args),
+                Ingest::Cir { .. } => unreachable!(),
+            };
+            let AdapterIngest {
+                repo,
+                profile,
+                adapter,
+                yes_run_adapter,
+                max_message_bytes,
+                max_messages,
+                timeout_ms,
+                max_memory_mb,
+                redact,
+                require_complete,
+            } = args;
+            let default_adapter = PathBuf::from(match language {
+                ske_query::Language::Go => "target/ske-adapter-go",
+                ske_query::Language::Rust => "adapters/rust/target/debug/ske-adapter-rust",
+                ske_query::Language::Java => "adapters/java/ske-adapter-java",
+            });
+            let adapter = adapter.as_ref().unwrap_or(&default_adapter);
             let default_profile = repo.join("build-profile.json");
             let selected_profile = profile
                 .as_ref()
@@ -225,7 +242,7 @@ fn execute(cli: &Cli) -> Result<(Value, i32)> {
             let input = selected_profile
                 .map(|path| ske_query::profile::read_profile(path))
                 .transpose()?;
-            let profile = ske_query::profile::normalize(input.as_deref())?;
+            let profile = ske_query::profile::normalize_for(language, input.as_deref())?;
             let limits = ske_query::RunLimits {
                 max_message_bytes: *max_message_bytes,
                 max_messages: *max_messages,
@@ -234,14 +251,17 @@ fn execute(cli: &Cli) -> Result<(Value, i32)> {
             };
             limits.validate()?;
             consent::ensure(path, repo, adapter, *yes_run_adapter)?;
-            let value = query.ingest_go(&ske_query::GoOptions {
-                repo,
-                adapter,
-                profile_json: &profile,
-                limits: &limits,
-                repository,
-                redact: *redact,
-            })?;
+            let value = query.ingest_language(
+                language,
+                &ske_query::IngestOptions {
+                    repo,
+                    adapter,
+                    profile_json: &profile,
+                    limits: &limits,
+                    repository,
+                    redact: *redact,
+                },
+            )?;
             if value["status"] == "ABORTED" {
                 status = 3;
             } else if *require_complete && value["inventory_status"] != "COMPLETE" {
@@ -457,7 +477,9 @@ fn main() {
             if matches!(
                 &cli.command,
                 Command::Ingest {
-                    command: Ingest::Go { redact: true, .. }
+                    command: Ingest::Go(AdapterIngest { redact: true, .. })
+                        | Ingest::Rust(AdapterIngest { redact: true, .. })
+                        | Ingest::Java(AdapterIngest { redact: true, .. })
                 }
             ) {
                 error.message = "operation failed (details redacted)".into();

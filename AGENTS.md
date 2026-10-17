@@ -1,8 +1,8 @@
 # SKE — reprise et règles du dépôt
 
 La source normative est `SKE_Specification_Implementation_v1.4.md`.
-La demande porte sur sa section 24 et le jalon v0.4 explicitement demandé,
-après v0.1 → v0.2 → v0.3, avec délégation et état durable.
+La demande actuelle porte sur le jalon v0.6 explicitement demandé,
+après v0.1 → v0.2 → v0.3 → v0.4 → v0.5, avec délégation et état durable.
 
 ## Avant de continuer
 
@@ -38,7 +38,12 @@ Reprise après v0.4 :
    et `docs/soundness-and-limits.md`.
 2. Ne pas réimplémenter les jalons v0.1 à v0.4.
 3. `python3 scripts/validate-v04.py` rejoue les 14 AC et les 96 AC précédents.
-4. v0.5 n'est pas commencée ; ne l'engager que sur demande.
+4. v0.5 est désormais validée sur l'architecture réconciliée de main :
+   13 AC et 110 AC antérieurs rejoués ; lire `docs/validation/reconcile-v0.5.md`.
+5. v0.6 est en cours sur demande explicite ; lire la dernière section du
+   journal et `docs/validation/v0.6.md`. Ne pas confondre un lot agent,
+   une compilation ou un ancien rapport avec une validation du jalon.
+6. Ne créer `cir-v1.0-frozen` qu'après vérification multilangage complète.
 
 ## Discipline
 

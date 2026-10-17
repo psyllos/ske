@@ -209,3 +209,36 @@ Limites v0.5 (bornes assumées, non des défauts) :
 - **Evidence** : ancrage RESULT_SITE aux spans de sortie complets émis par
   l'adaptateur Go de confiance ; l'adaptateur est le seul producteur de
   spans. Aucun texte « métier » n'est inventé (`behavior_no_business_text`).
+
+## v0.6 — frontières par langage (jalon en cours)
+
+### Go
+
+Contrat v0.2 et limites de précision v0.3–v0.5 conservés. La mutualisation
+du lanceur pour Rust/Java ne transforme pas les attestations Go et ne
+supprime aucune inconnue, hypothèse ou coupe.
+
+### Rust
+
+Pilote MIR réel isolé, pas de types rustc dans le cœur. Construction de
+l'adaptateur en 1.99.0 ; producteur MIR nightly contrôlé séparément par
+identité complète. L'alias daté disponible localement ne correspond pas
+au hash attendu ; la reproductibilité sur une machine neuve n'est donc
+pas encore démontrée (ADR-022-rust).
+
+Les IF atomiques dont les opérandes/polarités correspondent réellement au
+MIR ont une activation exacte. `match` et `?` sont inventoriés à la source,
+mais leurs activations restent incomplètes dans le pilote actuel. Aucune
+preuve source ne peut être fabriquée à partir de ces mappings incomplets.
+Les unités restent PARTIAL. L'inventaire complet des panics implicites,
+Drop/unwind/abort, macros, async/closures et dépendances Cargo est encore
+à compléter ou explicitement rejeté ; ce pilote ne clôt pas §10.1.
+Le chargement ne lance ni Cargo ni build.rs ni proc macros tiers.
+
+### Java
+
+Pilote SootUp/Jimple en cours d'intégration, bytecode cible 17, runtime local
+24.0.1. Lecture de classes et sources, pas de lancement du build étudié.
+La réflexion et les cibles dynamiques restent ouvertes (`world_closed=false`).
+Les mappings source inexacts et gardes d'exceptions non modélisées doivent
+rester explicites. Aucun résultat du lot Java n'est encore certifié ici.

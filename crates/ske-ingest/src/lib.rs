@@ -1,10 +1,12 @@
 //! Transactional, bounded-record CIR importer.
 pub mod adapter;
-mod go;
 mod insert;
+mod language;
 pub mod profile;
 mod validate;
-pub use go::{ingest_go, GoOptions};
+pub use language::{
+    ingest_go, ingest_java, ingest_language, ingest_rust, GoOptions, IngestOptions, Language,
+};
 
 use prost::Message;
 use rusqlite::{params, Connection, OptionalExtension};

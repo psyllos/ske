@@ -128,3 +128,33 @@ pub fn ensure(db: &Path, repo: &Path, adapter: &Path, yes: bool) -> Result<()> {
     result?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn consent_is_scoped_to_repository_adapter_path_and_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        let adapter = dir.path().join("rust-adapter");
+        std::fs::write(&adapter, b"version one").unwrap();
+        let db = dir.path().join("db");
+        ensure(&db, &repo, &adapter, true).unwrap();
+        ensure(&db, &repo, &adapter, true).unwrap();
+        let entries = || -> Vec<Value> {
+            serde_json::from_slice(&std::fs::read(dir.path().join(".ske/consent.json")).unwrap())
+                .unwrap()
+        };
+        assert_eq!(entries().len(), 1);
+        std::fs::write(&adapter, b"version two").unwrap();
+        ensure(&db, &repo, &adapter, true).unwrap();
+        assert_eq!(entries().len(), 2);
+        let java = dir.path().join("java-adapter");
+        std::fs::copy(&adapter, &java).unwrap();
+        ensure(&db, &repo, &java, true).unwrap();
+        assert_eq!(entries().len(), 3);
+        assert_ne!(entries()[0]["version"], entries()[1]["version"]);
+    }
+}

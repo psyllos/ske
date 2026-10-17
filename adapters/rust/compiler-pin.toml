@@ -1,0 +1,4 @@
+# Identity of the analyzed-program MIR producer, independent of adapter build.
+channel = "nightly-2026-10-15"
+release = "1.101.0-nightly"
+commit_hash = "4ebd258257737d5b7635c116fa7d281627a7e937"

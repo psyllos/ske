@@ -1,0 +1,21 @@
+[package]
+name = "ske-adapter-rust"
+version = "0.6.0"
+edition = "2021"
+
+[workspace]
+
+[dependencies]
+ske-cir = { path = "../../crates/ske-cir" }
+prost = "=0.14.4"
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.154"
+sha2 = "=0.11.1"
+syn = { version = "=2.0.119", features = ["full", "visit"] }
+proc-macro2 = { version = "=1.0.107", features = ["span-locations"] }
+tempfile = "=3.27.0"
+
+[dev-dependencies]
+ske-ingest = { path = "../../crates/ske-ingest" }
+ske-storage = { path = "../../crates/ske-storage" }
+
