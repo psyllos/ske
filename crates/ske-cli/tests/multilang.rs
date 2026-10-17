@@ -132,11 +132,30 @@ impl MultiLab {
     fn new(lang: &'static str) -> Self {
         let lab = Self::prepare(lang);
         let out = lab.ingest(true, None);
-        assert!(
-            out.status.success(),
-            "{}",
-            String::from_utf8_lossy(&out.stdout)
-        );
+        if !out.status.success() {
+            let mut persisted = String::new();
+            if let Ok(conn) = Connection::open(&lab.lab.db) {
+                if let Ok(mut rows) =
+                    conn.prepare("SELECT severity, code, message FROM diagnostics ORDER BY id")
+                {
+                    if let Ok(rows) = rows.query_map([], |r| {
+                        Ok(format!(
+                            "{} {} {}",
+                            r.get::<_, String>(0)?,
+                            r.get::<_, String>(1)?,
+                            r.get::<_, String>(2)?
+                        ))
+                    }) {
+                        persisted = rows.filter_map(|r| r.ok()).collect::<Vec<_>>().join("\n");
+                    }
+                }
+            }
+            panic!(
+                "[{lang}] ingest failed\nstdout:\n{}\nstderr:\n{}\npersisted:\n{persisted}\n",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
         let _: Value = serde_json::from_slice(&out.stdout).expect("pure CLI JSON");
         lab.lab.ok(&["db", "check"]);
         lab
