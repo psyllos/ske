@@ -77,4 +77,15 @@ workspace complet (dont les quatre nouvelles régressions) et intégrité SQL.
 Elle hérite explicitement de la preuve verify dans la chaîne v0.4→v0.1,
 sans supprimer de contrôle ni ignorer de test.
 
-Publication du candidat et CI Linux/macOS : prochaine étape avant landing.
+## CI distante du code réconcilié
+
+Candidat publié : `6349428f8b537ed2efef8e0b37538f43f719a1c3`.
+Run https://github.com/psyllos/ske/actions/runs/39014683449 :
+**SUCCESS**, Linux (9 min 4 s) et macOS (9 min 32 s).
+Formatage, Clippy strict, `cargo test --workspace --locked` et
+`./scripts/verify.sh` passent sur les deux plateformes, sans sérialisation
+Rust imposée par le workflow.
+
+Cette preuve s'ajoute à la campagne locale des 123 AC, et porte bien sur
+le code réconcilié basé sur main. La consignation de ces résultats ne
+modifie ni le code ni les tests.

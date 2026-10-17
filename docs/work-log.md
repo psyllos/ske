@@ -1203,3 +1203,18 @@ aucun test ignoré pour contourner un échec. Rapport :
 Prochaine étape autorisée : publier ce candidat puis attendre sa CI
 Linux/macOS avant toute avance de main. Ne pas substituer la CI verte
 historique de `72e1db9` à la CI de ces corrections.
+
+### CI distante du code réconcilié verte
+
+Publié `6349428f8b537ed2efef8e0b37538f43f719a1c3` sur
+`origin/ske/v05-main-fixes`. Run
+https://github.com/psyllos/ske/actions/runs/39014683449 : SUCCESS.
+Linux 9 min 4 s, macOS 9 min 32 s ; fmt, Clippy, tests workspace locked et
+workflow de conformité complets passent sur les deux plateformes.
+`main` était encore `72e1db9` lors de cette vérification.
+
+Les résultats sont consignés dans `docs/validation/reconcile-v0.5.md`.
+Le commit de cette consignation ne change que la documentation ; le code
+reste identique au candidat validé. L'autorisation `/land`, précisée par le
+choix de conserver l'architecture de main et de porter les seuls correctifs
+manquants, reste la portée de cette opération.
