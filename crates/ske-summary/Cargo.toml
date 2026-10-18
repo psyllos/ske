@@ -6,6 +6,6 @@ edition.workspace = true
 [dependencies]
 ske-common.workspace = true
 ske-cir.workspace = true
-ske-symbolic = { path = "../ske-symbolic" }
-ske-solver = { path = "../ske-solver" }
+ske-symbolic.workspace = true
+ske-solver.workspace = true
 serde_json.workspace = true

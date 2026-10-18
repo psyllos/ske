@@ -10,13 +10,13 @@ ske-ingest.workspace = true
 rusqlite.workspace = true
 serde_json.workspace = true
 serde.workspace = true
-toml = "=1.1.8"
+toml.workspace = true
 ske-cir.workspace = true
-ske-symbolic = { path = "../ske-symbolic" }
-ske-summary = { path = "../ske-summary" }
-ske-behavior = { path = "../ske-behavior" }
-ske-solver = { path = "../ske-solver" }
-ske-verify = { path = "../ske-verify" }
+ske-symbolic.workspace = true
+ske-summary.workspace = true
+ske-behavior.workspace = true
+ske-solver.workspace = true
+ske-verify.workspace = true
 prost.workspace = true
 
 [dev-dependencies]

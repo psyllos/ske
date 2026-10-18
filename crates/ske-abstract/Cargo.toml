@@ -7,4 +7,4 @@ edition.workspace = true
 ske-cir.workspace = true
 
 [dev-dependencies]
-ske-symbolic = { path = "../ske-symbolic" }
+ske-symbolic.workspace = true

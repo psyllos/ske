@@ -16,6 +16,12 @@ ske-ingest = { path = "crates/ske-ingest" }
 ske-query = { path = "crates/ske-query" }
 ske-api = { path = "crates/ske-api" }
 ske-mcp = { path = "crates/ske-mcp" }
+ske-behavior = { path = "crates/ske-behavior" }
+ske-solver = { path = "crates/ske-solver" }
+ske-summary = { path = "crates/ske-summary" }
+ske-symbolic = { path = "crates/ske-symbolic" }
+ske-verify = { path = "crates/ske-verify" }
+toml = "=1.1.8"
 prost = "=0.14.4"
 prost-build = "=0.14.4"
 protoc-bin-vendored = "=3.3.0"

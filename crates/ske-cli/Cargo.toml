@@ -20,4 +20,4 @@ rusqlite.workspace = true
 tempfile.workspace = true
 ske-graph.workspace = true
 ske-mcp.workspace = true
-ske-api = { path = "../ske-api" }
+ske-api.workspace = true

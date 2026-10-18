@@ -7,6 +7,6 @@ edition.workspace = true
 rusqlite.workspace = true
 
 [dev-dependencies]
-ske-storage = { path = "../ske-storage" }
-ske-ingest = { path = "../ske-ingest" }
+ske-storage.workspace = true
+ske-ingest.workspace = true
 tempfile.workspace = true
