@@ -222,6 +222,79 @@ func G(rs []rune) bool {
 	}
 }
 
+// TestAnyInterfaceTypeIdentity guards `any` -> `interface{}` canonicalization
+// in typ(). Real Go 1.18+ code mixes the predeclared alias `any` with an
+// explicit `interface{}` spelling at the same call boundary (e.g.
+// mitchellh/mapstructure calls reflect.ValueOf(d.config.Result) where ValueOf
+// declares its parameter as `any` and the argument's field type is supplied as
+// `interface{}`). The CIR validator checks CALL by exact type-id equality, so
+// both spellings must collapse onto one type id or the ingest aborts with
+// E_TYPE_MISMATCH.
+func TestAnyInterfaceTypeIdentity(t *testing.T) {
+	p, fs := sourceSSA(t, `package p
+func id(v any) any { return v }
+
+func F(d any, i interface{}) {
+	_ = id(d)
+	_ = id(i)
+}
+`)
+	r := Lower(p, fs, "/project", types.SizesFor("gc", "amd64"))
+	typesByID := map[string]*cir.TypeDef{}
+	values := map[string]*cir.ValueDef{}
+	for _, rec := range r.Records {
+		if d := rec.GetTypeDef(); d != nil {
+			typesByID[d.Id] = d
+		}
+		if d := rec.GetValueDef(); d != nil {
+			values[d.Id] = d
+		}
+	}
+	if _, ok := typesByID["go:any"]; ok {
+		t.Fatal("any alias type survived canonicalization: go:any")
+	}
+	// Both spellings must land on exactly one INTERFACE record.
+	interfaces := 0
+	for id, td := range typesByID {
+		if td.Kind != "INTERFACE" {
+			continue
+		}
+		interfaces++
+		if id != "go:interface{}" {
+			t.Fatalf("unexpected interface type id: %s", id)
+		}
+	}
+	if interfaces != 1 {
+		t.Fatalf("expected exactly one INTERFACE record, got %d", interfaces)
+	}
+	// The CIR validator enforces exact type-id equality between each CALL
+	// argument and the callee's declared parameter type. Both call sites must
+	// satisfy it, or the ingest would abort with E_TYPE_MISMATCH.
+	for _, rec := range r.Records {
+		i := rec.GetInstructionDef()
+		if i == nil || i.Opcode != "CALL" || len(i.OperandValueIds) < 2 {
+			continue
+		}
+		callee := values[i.OperandValueIds[0]]
+		if callee == nil {
+			continue
+		}
+		sig := typesByID[callee.TypeId]
+		if sig == nil || sig.Kind != "FUNCTION" {
+			continue
+		}
+		for k, argID := range i.OperandValueIds[1:] {
+			arg := values[argID]
+			if arg == nil || k >= len(sig.ParamTypeIds) {
+				break
+			}
+			if arg.TypeId != sig.ParamTypeIds[k] {
+				t.Fatalf("CALL arg type mismatch: %v arg %d is %s, callee param is %s", i.Id, k, arg.TypeId, sig.ParamTypeIds[k])
+			}
+		}
+	}
+}
+
 // TestSignatureTypeNamesDoNotLeak guards the signature canonicalization in
 // signatureID(). Real code passes a closure to a method taking a func()-typed
 // parameter (godotenv.expandEscapes does `re.ReplaceAllStringFunc(s, func(match

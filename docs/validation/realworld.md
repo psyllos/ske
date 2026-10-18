@@ -104,9 +104,13 @@ explicite (fail-closed), conforme au contrat.
 ## Liens vers les tests ajoutés
 
 - `adapters/go/internal/lower/lower_test.go::TestByteRuneAliasTypeIdentity`
+- `adapters/go/internal/lower/lower_test.go::TestAnyInterfaceTypeIdentity`
+- `adapters/rust/tests/adapter.rs::rust_loops_and_arithmetic_representable`
+- `adapters/java/src/test/java/org/ske/javaadapter/AdapterTest.java::
+  subtype_to_supertype_invoke_is_modeled`
 - `adapters/java/src/test/java/org/ske/javaadapter/AdapterTest.java::
   array_store_and_float_arithmetic_are_valid_or_opaque`
-- Ces deux tests sont épinglés par `scripts/check-doc-claims.py`.
+- Ces tests sont épinglés par `scripts/check-doc-claims.py`.
 
 ## Lot 2 — autres projets GitHub au hasard
 
@@ -149,3 +153,141 @@ Projet **sans `go.mod`** (ère pré-modules) : `packages.Load` échoue avec
 `pattern ./...: directory prefix . does not contain main module`. L'adaptateur
 Go nécessite un module Go (go.mod). Comportement honnête (échec clair, pas
 d'analyse incorrecte), à documenter comme frontière : pas de support GO111MODULE=off.
+
+## Lot 3 — campagne systématique (sous-agents scout, en parallèle)
+
+6 scouts (2 Go, 2 Java, 2 Rust) testent ~3 projets réels chacun. Rapports
+individuels dans `target/realworld3/<lang>-?/{report.md}`. Les 6 rapports sont
+arrivés ; cette section consolide les constats et les corrections qui en ont
+découlé.
+
+### go-b (rapport reçu) — 3 projets, 0 bug, preuve formelle
+
+- **go-playground/colors** ✓ : ingest CLOSED/COMPLETE, 34 fns ; `Parse` 4/8,
+  `IsLightAlpha` 2/4 — tous POSSIBLE, confrontations conformes.
+- **xtaci/smux** ✓ : ingest CLOSED/PARTIAL ; `VerifyConfig` avec **1
+  PROVEN_UNREACHABLE formel** (MODEL_UNREACHABLE, ALL_ARRIVALS_UNSAT, 4 arrivées
+  éliminées) — correct (contraintes antérieures bornent MaxStreamBuffer). `select
+  + default`/goroutine/defer : partiels documentés.
+- **spf13/pflag** ✓ : CLOSED/PARTIAL ; `AddFlag` 8/16, `Set` 5/10 EXACT ;
+  type-switch (`switch f.Value.(type)`) inventorié mais sans IR (UNKNOWN,
+  conservateur).
+- Frontière : `matryer/way`, `bmizerany/pat` (sans go.mod, pré-modules) →
+  ABORTED propre (même limite que go-cache).
+
+### java-b (rapport reçu) — vrai bug majeur, corrigé
+
+Voir `docs/work-log.md` (Lot 3) et les 3 correctifs `Extractor.java` :
+garde BRANCH BOOL, invoke booléen, élargissement char/byte. Repros et
+effective-java items 37/50 ingèrent désormais 0 erreur ; json-simple/commons-
+codec bloqués sur E_SSA_DOMINANCE de code généré (frontière documentée).
+
+### go-a (rapport reçu) — bug `any`/`interface{}` réel, corrigé
+
+- **mitchellh/mapstructure** — ABORTED/FAILED : `E_TYPE_MISMATCH` au CALL
+  `reflect.ValueOf` (`(*Decoder).Decode/b0/i4`). Cause racine : le paramètre
+  déclaré de `reflect.ValueOf` est l'alias prédéclaré `any` (`go:any`) alors que
+  l'argument réel (`d.config.Result`, champ `interface{}`) est `go:interface{}`
+  — deux ids pour la même représentation → le cœur (`E_TYPE_MISMATCH`, égalité
+  exacte, §CIR CALL) rejette. **Corrigé** : `typ()` résout désormais les
+  `*types.Alias` (`any`, et `byte`/`rune` en go/types ≥1.22) via
+  `types.Unalias`, faisant tomber `any` sur `go:interface{}`. Test
+  `TestAnyInterfaceTypeIdentity` (échoue avant, passe après).
+- **hashicorp/golang-lru** (génériques) — CLOSED, pkg racine PARTIAL (52
+  WARNING documentés : DEFER_UNMODELED 24, SOURCE_MISMATCH 22,
+  CONCURRENCY_PARTIAL 5, LOOP_BOUND_REACHED 1), sous-paquets COMPLETE ~110 fns.
+  3 confrontations ✓ vs lecture manuelle : `(*Cache).Add` IR 4/8 source 6/12 ;
+  `ContainsOrAdd` IR 5/10 source 7/14 ; `Purge` IR 4/8 source 5/10 (mapping
+  SHORT_CIRCUIT EXACT, run PARTIAL loop-cut documenté). 0 erreur.
+- **inconshreveable/mousetrap** — CLOSED/COMPLETE. `StartedByExplorer` IR 0/0 ✓
+  (corps non-Windows = `return false`) ; `trap_windows.go` exclu par build-tag
+  (INFO BUILD_TAG_EXCLUDED_FILE, seule limite réelle) ; `init` synthétique non
+  confrontable.
+- Écartés (discipline) : ryanuber/columnize (sans go.mod, pré-modules,
+  frontière ABORTED identique à way/pat/go-cache), golang/groupcache (require
+  protobuf réel).
+
+### rust-b (rapport reçu) — sous-ensemble réel étroit, 2 fonctions réelles ✓
+
+Rejet propre au portail source sur rayon-rs/rayon et rust-lang/regex :
+
+- **rayon-rs/rayon** `src/math.rs` → `RUST_SOURCE_UNSUPPORTED: macros (...`
+  (déclencheur : `panic!` dans `simplify_range`).
+- **rust-lang/regex** `regex-syntax/src/utf8.rs` → `RUST_SOURCE_UNSUPPORTED:
+  modules require multi-file provenance` (`#[cfg(test)] mod tests`).
+- Frontière réelle : aucune doc/attribut dans un fichier réel (tout `///` est un
+  attribut `#[doc]`, `#[test]`/`mod` omniprésents) → aucun fichier entier ne
+  passe le portail ; seule l'extraction de fonctions (doc commentée, adaptée)
+  marche.
+
+Fait clé (sonde) : la caméra MIR debug rejetait `+ - * << >> -x` (asserts de
+DÉBORDEMENT du producer non optimisé) → les compteurs de boucle ne pouvaient
+plus progresser, **les boucles étaient non représentables**. **Levé** : la
+caméra passe désormais `-Coverflow-checks=off` (sémantique
+release : l'arithmétique déborde en wrappant, pas de panic) ; les boucles et
+l'arithmétique `+ - * << >> -x` rentrent (OPAQUE_OP conservateur). Frontière
+restante fail-closed réelle : `/` et `%` (division par zéro, panic réelle en
+Rust) déclenchent toujours un assert MIR → `MIR_UNSUPPORTED`. Voir
+`rust_loops_and_arithmetic_representable` (adapters/rust/tests/adapter.rs).
+
+Fonctions réelles qui rentrent (verdicts ✓) :
+
+- **`is_valid_cap_letter`** (regex-lite/src/interpolate.rs:276) : CLOSED/PARTIAL,
+  match 4 plages + `_` → 1 décision source (2 issues), 7 décisions IR / 14
+  issues, **14/14 POSSIBLE**, exploration fermée — conforme à la lecture
+  manuelle (borne basse/haut ×3 + égalité `_`).
+- **`is_leading_or_invalid_byte`** (regex-automata/src/util/utf8.rs:138) :
+  CLOSED/COMPLETE, expression plate `(b & 0b1100_0000) != 0b1000_0000`, 0/0
+  issue — trivialement exact.
+
+Frontières fail-closed réelles : `max_scalar_value` (`unreachable!` → rejet
+macros) ; corps de `ByteSet::contains` (`/128 %128`) → rejet MIR
+`assert "attempt to divide by zero"` (le `1<<bit` qui plantait avant est
+entré grâce à `-Coverflow-checks=off`).
+Détails dans `target/realworld3/rust-b/report.md`.
+
+### rust-a (rapport reçu) — 2 rejets macro propres, 3 fonctions réelles fit
+
+- **ripgrep** (`crates/core/main.rs`) et **serde** (`serde/src/lib.rs`) →
+  ABORTED/FAILED propre : `RUST_SOURCE_UNSUPPORTED: macros (including include!)
+  require expansion provenance; unsupported` (frontière attendue, sous-ensemble
+  mono-fichier sans macros).
+- Frontière MIR complémentaire (producer non optimisé, checks de débordement
+  actifs) : `%`, `-`, `<<` (même constant), `assert!` → `MIR_UNSUPPORTED`
+  (terminator assert/drop) ; `match` avec alternatives `|` → PARTIAL.
+- **3 fonctions réelles de ripgrep ingérées COMPLETE, confrontations ✓** :
+  `byte_range_contains` (ban.rs, 1 décision IR / 2 issues POSSIBLE) ;
+  `literal_seq_is_good` (literal.rs ::is_good, 2 décisions / 4 issues dont 1
+  PROVEN_UNREACHABLE correct par raisonnement manuel) ; `Match::len` de
+  matcher — corps verbatim `end - start` **désormais représentable** après
+  `-Coverflow-checks=off` (auparavant rejeté par l'assert de débordement ;
+  forme adaptée `saturating_sub` toujours COMPLETE, issues NORMAL+EXCEPTION :
+  artefact de modélisation d'appel externe documenté).
+- Extraction/adaptation mécanique uniquement (aucun changement de sémantique) ;
+  aucun binaire étudié exécuté. Détails et commandes : `target/realworld3/rust-a/report.md`.
+
+### java-a (rapport reçu) — 3e bug Java réel, corrigé (INVOKE retour sous-typage)
+
+- **item30 `RecursiveTypeBound`** et tout appel non-void passant un argument de
+  type **sous-type** à un paramètre supertype (`Number←Integer`,
+  `Collection←List`) ou `throw <résultat d'appel>` échouait en `E_TYPE_MISMATCH`
+  au INVOKE (le cœur exige l'égalité exacte des type-ids, résultat d'appel =
+  type de retour déclaré). **Cause racine (dump CIR)** : un local JVM typé large
+  (ex. `java:java.lang.Object`) recevant le résultat d'un invoke déclaré plus
+  précisément (ex. `java:java.util.List` de `Arrays.asList`) → le slot SSA du
+  local était pré-alloué avec le type large, l'INVOKE réutilisait ce slot, et le
+  résultat différait du type de retour déclaré du callee.
+  **Corrigé** : à la pré-allocation des slots, un local à définition unique dont
+  la définition est un `JAssignStmt` à RHS invoke est typé par le **type de
+  retour déclaré** de l'invoke (pas le type JVM du local). Les 33 repros iso-*
+  du scout (params/retours/varargs/throw/fresh) passent CLOSED 0 erreur ;
+  effective-java items 30/37/46 CLOSED/PARTIAL 0 erreur. Test
+  `subtype_to_supertype_invoke_is_modeled` (échoue avant le fix en vérifiant
+  l'assertion `Arrays.asList result must be typed java.util.List`, passe
+  après).
+- **item37/item46 (Phase/Plant/Freq)** : CLOSED/PARTIAL 0 erreur, confrontations
+  ✓ (SRC 3, 5, 1 décisions correspondant à la lecture manuelle ; switch 16 cas
+  sur `Conversion.intToHexDigitMsb0` mappé exactement).
+- **commons-lang/commons-collections scopes** : CLOSED/PARTIAL 0 erreur,
+  confrontations ✓ ; full-repo >~100 classes → `E_ADAPTER_LIMIT` (cap launcher
+  -Xmx512m, limite documentée).

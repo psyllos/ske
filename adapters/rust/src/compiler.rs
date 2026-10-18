@@ -136,6 +136,12 @@ impl Compiler {
                 "-Zmir-include-spans=yes",
                 "-Copt-level=0",
                 "-Cpanic=unwind",
+                // Without this, the debug camera injects overflow-check assert
+                // terminators into + - * << >> and negation, making loop counters
+                // and simple arithmetic MIR_UNSUPPORTED (fail-closed). Release MIR
+                // has no such checks (wrapping arithmetic), so this is the faithful
+                // view; div/rem-by-zero asserts remain real panics and stay.
+                "-Coverflow-checks=off",
             ])
             .arg(entry)
             .stdin(Stdio::null())

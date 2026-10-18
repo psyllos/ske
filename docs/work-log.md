@@ -1840,3 +1840,117 @@ toutes conformes.
 Preuves : `go test ./...` adaptateur Go vert (9 paquets), `verify.sh`
 `VERIFY OK v0.7` rejoué avec le fix signature. Travail non commité / non poussé
 (la demande `/land` ne portait que sur le lot 1, déjà livré en `a3a6af8`).
+
+## Lot 3 — campagne systématique via sous-agents (scout, 6 en parallèle)
+
+Demande : plus de projets réels (5-6/langage), sous-agents en parallèle pour
+couvrir sans bloquer le contexte. 3 reporters reçus à ce jour (go-b, java-b),
+le reste en cours.
+
+### Java — 3 corrections découvertes par le scout java-b (rejets sur vrais projets)
+
+Le scout java-b (effective-java items 37/50, commons-codec, json-simple) a
+montré que l'adaptateur Java v0.6 **abortait l'unité entière** dès la première
+comparaison non modélisable :
+
+1. **Garde BRANCH non-BOOL** — `if (ref == null)`, ternaire à null : SootUp type
+   le résultat de comparaison JVM en `int`, l'adaptateur émettait un OPAQUE_OP
+   typé `java:int` => `E_TYPE_MISMATCH` (BRANCH exige BOOL). Fix : `opaqueBool`
+   (comparaison non modélisable => booléen opaque BOOL).
+2. **Résultat d'invoke booléen typé int** — `if (s.equals(t))` : le local booléen
+   était plié en int par `localType`, l'INVOKE qui rend booléen binding un SSA int
+   contre une fonction déclarée boolean => `E_TYPE_MISMATCH`. Fix : `localType`
+   conserve boolean (et byte/short/char) comme types déclarés.
+3. **Élargissement JVM byte/short/char→int** — `byte & 0xff`, comparaisons
+   `char >= x` : opérandes de types différents => rejets BIT_AND/ordre. Fix :
+   `widenToInt` (binops) et tag de `SWITCH` élargi en int (SootUp émet les
+   constantes de cas en IntConstant).
+
+Résultat : les repros minimalistes (null guard, booléen d'invoke, char switch)
+passent CLOSED/PARTIAL 0 erreur ; `ej-b` (items 37/50) CLOSED 0 erreur ;
+`json-simple`/`commons-codec` restent bloqués sur des `E_SSA_DOMINANCE` de
+code généré (lexer Yylex, Hex.encode) — à documenter comme frontière. Test de
+régression `boolean_guards_and_char_switch_are_modeled` (12 tests AdapterTest
+vert) ; `mvn verify` vert ; `cargo test -p ske-cli --test multilang` 12/12.
+
+### Rust — reports rust-a + rust-b (frontière MIR overflow) et correction caméra
+
+Les scouts rust-a (ripgrep, serde) et rust-b (rayon, regex) sont arrivés et
+convergent indépendamment : la caméra MIR debug (producer non optimisé, checks
+de débordement actifs) injecte des terminateurs `assert(...)` dans `+ - * <<
+>> -x` → le lowerer refuse fail-closed (`MIR_UNSUPPORTED`) → **les boucles et
+l'arithmétique simple étaient non représentables** (un `i += 1` faisait
+abandonner toute la fonction) ; `Match::len` (corps `end - start`) de ripgrep
+et `is_valid_cap_letter`/`is_leading_or_invalid_byte` de regex ne rentraient
+que vidés de leur arithmétique, et les frontières source (macros, `mod`,
+`#[test]`) restent intactes (rejets propres documentés).
+
+**Fix (adapters/rust/src/compiler.rs)** : la caméra passe désormais
+`-Coverflow-checks=off` (sémantique release : l'arithmétique déborde en
+wrappant, pas de panic ; les `assert` de débordement disparaissent du MIR
+étudié). Preuve/verrou : sonde `while` + `diff` — avant le fix `assert(...)`
+présents (rejet), après `Add`/`Sub` nus + arête retour de boucle (back-edge).
+Test de régression `rust_loops_and_arithmetic_representable`
+(adapters/rust/tests/adapter.rs) : unité avec boucle + `a - b` s'extrait sans
+`MIR_UNSUPPORTED`, arithmétique conservée en OPAQUE_OP, back-edge de boucle
+présent.
+
+**Frontière restante (documentée, fail-closed)** : `/` et `%` (division par
+zéro) émettent toujours un assert MIR même avec `-Coverflow-checks=off` (ce
+sont de vraies panics Rust) → `MIR_UNSUPPORTED`. Le `1<<bit` de
+`ByteSet::contains` (regex-lite) qui plantait avant rentre désormais.
+
+### Go — report go-a et bug `any`/`interface{}` réel, corrigé
+
+Le scout go-a (mitchellh/mapstructure, hashicorp/golang-lru,
+inconshreveable/mousetrap ; écartés ryanuber/columnize sans go.mod et
+golang/groupcache à require protobuf réel) a trouvé un **3e bug Go réel** :
+mapstructure échouait à l'ingestion (`ABORTED`, `(\*Decoder).Decode/b0/i4`
+`E_TYPE_MISMATCH`) car la signature prédéclarée de `reflect.ValueOf` est
+`any` (`go:any`) alors que l'argument réel était typé `go:interface{}` → au
+CALL le cœur exige l'égalité exacte des ids (`validation.rs`, §CIR).
+
+**Fix (adapters/go/internal/lower/types.go)** : `typ()` résout désormais les
+`*types.Alias` (Go 1.18+ `any`, et `byte`/`rune` en go/types ≥1.22) via
+`types.Unalias`, ce qui fait tomber `any` sur `go:interface{}`. Test de
+régression `TestAnyInterfaceTypeIdentity` (échoue avant le fix avec
+`go:any` survivant, passe après). golang-lru (génériques) et mousetrap
+ingèrent CLOSED avec confrontations ✓ ; les 52 WARNING de golang-lru sont
+documentés (defer, source-mismatch, goroutines, boucle coupée).
+
+Preuves : `go test ./...` adaptateur Go vert (9 paquets) ; `cargo test
+--test adapter` Rust vert (12 tests dont le nouveau) ; `cargo test -p
+ske-cli --test multilang` 12/12 (non-régression bout-en-bout). Travail non
+commité / non poussé (aucun `/land` reçu pour ces corrections ; le lot 3
+alimentera le prochain commit). `docs/validation/realworld.md` consolidé (6
+rapports).
+
+### Java — 4e bug (java-a) corrigé : INVOKE au retour sous-typé (`E_TYPE_MISMATCH`)
+
+Le scout java-a (effective-java item30, commons-lang/collections, isolates
+iso-*) a trouvé que tout invite non-void dont le **type de retour déclaré est
+plus précis que le type JVM du local** abortait l'unité : dump CIR sur
+iso-RecursiveTypeBound (33 isolates au total) → `Arrays.asList(args)` : le
+local `v0` pré-alloué typé `java:java.lang.Object` (type JVM large) mais
+l'invoke déclare `java:java.util.List` → le cœur exige résultat d'appel =
+type de retour déclaré (`validation.rs`, §CIR CALL) → `E_TYPE_MISMATCH` au
+`/b1/i1/INVOKE`.
+
+**Fix (adapters/java/.../Extractor.java)** : à la pré-allocation des slots (un
+local à définition unique dont la définition est un `JAssignStmt` avec RHS
+invoke), typer le slot par le **type de retour déclaré de l'invoke** plutôt que
+par le type JVM du local. Fix vérifié : les 33 isolates iso-* (params
+sous→super, retours, varargs, throw, fresh) passent CLOSED 0 erreur ;
+effective-java items 30/37/46 CLOSED/PARTIAL 0 erreur.
+
+Test de régression `subtype_to_supertype_invoke_is_modeled` (vérifie que le
+résultat d'`Arrays.asList` est typé `java:java.util.List` ; échoue avant le
+fix — vérifié par inversion temporaire via git stash, message d'échec
+« expected: <java:java.util.List> but was: <java:java.lang.Object> » — et
+passe après). `mvn verify` vert (13 tests AdapterTest + Item34DumpTest) ;
+`cargo test -p ske-cli --test multilang` 12/12 rejoué vert.
+
+**Bilan Lot 3** : 6/6 rapports scouts reçus ; 6 bugs adaptateurs réels
+corrigés (Go : byte/rune, signatures, `any` ; Java : garde BOOL, invoke
+booléen, élargissement char, retour sous-typé ; Rust : checks de débordement
+MIR). Documents consolidés ; aucun push/merge (la demande l'interdit).

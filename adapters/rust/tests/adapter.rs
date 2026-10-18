@@ -146,6 +146,36 @@ fn rust_real_mir_cfg_and_import() {
 }
 
 #[test]
+fn rust_loops_and_arithmetic_representable() {
+    // Real Rust loops increment loop counters (`i += 1`) and accumulate
+    // (`acc = acc + i`). Without -Coverflow-checks=off the debug MIR camera
+    // injects overflow-check assert terminators into + - * << >> and negation,
+    // which the lowerer rejects fail-closed (MIR_UNSUPPORTED): loops and
+    // arithmetic like `end - start` were unrepresentable. This guards the flag
+    // that keeps those asserts out of the studied MIR.
+    let text = "pub fn sum(n: i32) -> i32 {\n    let mut acc = 0;\n    let mut i = 0;\n    while i < n {\n        acc = acc + i;\n        i = i + 1;\n    }\n    acc\n}\npub fn diff(a: i32, b: i32) -> i32 { a - b }\n";
+    let records = extract_text(text);
+    // The fix's point: the unit no longer aborts on overflow-check asserts.
+    assert!(!records.iter().any(|r| matches!(&r.content, Some(C::Diagnostic(d)) if d.code == "MIR_UNSUPPORTED")));
+    // Arithmetic is conservatively opaque (the adapter models comparisons, not
+    // binops), but it must lower instead of killing the whole function.
+    assert!(records.iter().any(|r| matches!(&r.content, Some(C::InstructionDef(i)) if i.opcode == "OPAQUE_OP")));
+    // A loop back-edge is an UNCONDITIONAL edge back to an earlier block.
+    let back = |id: &str| -> u32 {
+        id.rsplit_once('/').unwrap().1.trim_start_matches("bb").parse().unwrap()
+    };
+    let has_back_edge = records.iter().any(|r| match &r.content {
+        Some(C::ControlEdgeDef(e))
+            if e.edge_kind == "UNCONDITIONAL" && e.source_block_id.starts_with("rust:fn:sum/") =>
+        {
+            back(&e.source_block_id) > back(&e.target_block_id)
+        }
+        _ => false,
+    });
+    assert!(has_back_edge, "loop back-edge missing: the while body was not lowered");
+}
+
+#[test]
 fn rust_generic_not_fixture_constants() {
     let text = "pub fn unrelated(value: i16) -> i16 { if value >= 37 { 12 } else { -8 } }\n";
     let records = extract_text(text);

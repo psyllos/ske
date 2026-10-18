@@ -252,4 +252,116 @@ class AdapterTest {
             r.getDiagnostic().getAffectedFunctionId().contains("Ops: double avg")
                 && r.getDiagnostic().getCode().equals("UNSUPPORTED_INSTRUCTION")));
     }
+
+    @Test void boolean_guards_and_char_switch_are_modeled() throws Exception {
+        // Regression for real-project failures (godotenv-style null guards, boolean
+        // invoke results, char switches) that previously ABORTED the whole unit:
+        //  - `if (s == null)` produced a BRANCH guard typed java:int (BITVECTOR) instead
+        //    of BOOL -> E_TYPE_MISMATCH.
+        //  - a boolean-returning call (s.equals) bound an int-typed local to a boolean
+        //    result -> E_TYPE_MISMATCH at INVOKE.
+        //  - a char switch emitted an int tag with char/byte case constants -> E_TYPE_MISMATCH.
+        Path project = Files.createTempDirectory(Path.of("target"), "bool-").toRealPath();
+        Files.createDirectories(project.resolve("src/main/java"));
+        Files.createDirectories(project.resolve("target/classes"));
+        Path java = project.resolve("src/main/java/Bool.java");
+        Files.writeString(java, """
+            public class Bool {
+                public static class T {}
+                public static T make() { return null; }
+                public static String nullGuard(T t) {
+                    if (t == null) return "a";
+                    return "b";
+                }
+                public static boolean same(String a, String b) { return a.equals(b); }
+                public static String kind(char c) {
+                    switch (c) {
+                        case 34: return "quote";
+                        case 92: return "slash";
+                        case 10: return "nl";
+                        default: return "other";
+                    }
+                }
+            }
+            """);
+        assertEquals(0, ToolProvider.getSystemJavaCompiler().run(null, null, null, "--release", "17", "-g",
+            "-d", project.resolve("target/classes").toString(), java.toString()));
+        var extracted = new Extractor(project, Main.Profile.parse("")).extract();
+        // Every BRANCH guard must be BOOL-typed (the null guard would previously be int).
+        var values = new HashMap<String, Cir.ValueDef>();
+        var types = new HashMap<String, Cir.TypeDef>();
+        for (var record : extracted) {
+            if (record.hasValueDef()) values.put(record.getValueDef().getId(), record.getValueDef());
+            if (record.hasTypeDef()) types.put(record.getTypeDef().getId(), record.getTypeDef());
+        }
+        for (var record : extracted) if (record.hasInstructionDef()) {
+            var i = record.getInstructionDef();
+            if (i.getOpcode().equals("BRANCH")) {
+                var guard = values.get(i.getOperandValueIds(0));
+                assertEquals("BOOL", types.get(guard.getTypeId()).getKind(), "BRANCH guard not BOOL: " + guard);
+            }
+        }
+        // There must be a real SWITCH (kind(char)) and a boolean-returning INVOKE (same).
+        assertTrue(extracted.stream().filter(Cir.Record::hasInstructionDef).map(Cir.Record::getInstructionDef)
+            .anyMatch(i -> i.getOpcode().equals("SWITCH")));
+        assertTrue(extracted.stream().filter(Cir.Record::hasInstructionDef).map(Cir.Record::getInstructionDef)
+            .anyMatch(i -> i.getOpcode().equals("INVOKE") && i.getBlockId().contains("same")));
+        // A void (zero-result) check: extraction must have ended with EndUnit inventory COMPLETE
+        // or PARTIAL, never FAILED.
+        var end = extracted.get(extracted.size() - 1).getEndUnit();
+        assertTrue(end.getInventoryStatus().equals("COMPLETE") || end.getInventoryStatus().equals("PARTIAL"),
+            "unit inventory " + end.getInventoryStatus());
+    }
+
+    @Test void subtype_to_supertype_invoke_is_modeled() throws Exception {
+        // Regression for the java-a real-project finding (effective-java item30
+        // RecursiveTypeBound): a non-void INVOKE whose declared return type is more
+        // specific than the JVM-typed local slot (java.util.List vs java.lang.Object)
+        // aborted the whole unit with E_TYPE_MISMATCH at the INVOKE, because the CIR
+        // validator requires the INVOKE result value to equal the callee's declared
+        // return type. Pass-through subtype->supertype parameters must also extract
+        // (Object[] <- String[], Collection <- List).
+        Path project = Files.createTempDirectory(Path.of("target"), "subtype-").toRealPath();
+        Files.createDirectories(project.resolve("src/main/java"));
+        Files.createDirectories(project.resolve("target/classes"));
+        Path java = project.resolve("src/main/java/Sub.java");
+        Files.writeString(java, """
+            import java.util.*;
+            public class Sub {
+                public static <E extends Comparable<E>> E max(Collection<E> c) {
+                    return c.iterator().next();
+                }
+                public static void main(String[] args) {
+                    List<String> argList = Arrays.asList(args);
+                    System.out.println(Sub.max(argList));
+                }
+            }
+            """);
+        assertEquals(0, ToolProvider.getSystemJavaCompiler().run(null, null, null, "--release", "17", "-g",
+            "-d", project.resolve("target/classes").toString(), java.toString()));
+        var extracted = new Extractor(project, Main.Profile.parse("")).extract();
+        // The unit must not abort: inventory COMPLETE or PARTIAL, never FAILED, and no
+        // E_TYPE_MISMATCH inside a UNIT_FAILED diagnostic.
+        var end = extracted.get(extracted.size() - 1).getEndUnit();
+        assertTrue(end.getInventoryStatus().equals("COMPLETE") || end.getInventoryStatus().equals("PARTIAL"),
+            "unit inventory " + end.getInventoryStatus());
+        assertTrue(extracted.stream().filter(Cir.Record::hasDiagnostic)
+            .map(Cir.Record::getDiagnostic)
+            .noneMatch(d -> d.getCode().equals("UNIT_FAILED") || d.getCode().equals("E_TYPE_MISMATCH")),
+            "unexpected ingestion error");
+        // The Arrays.asList INVOKE result slot must be typed by the declared return
+        // (java.util.List), so the result equals the callee's declared return type.
+        var values = new HashMap<String, Cir.ValueDef>();
+        for (var record : extracted) if (record.hasValueDef())
+            values.put(record.getValueDef().getId(), record.getValueDef());
+        var asListInvoke = extracted.stream().filter(Cir.Record::hasInstructionDef)
+            .map(Cir.Record::getInstructionDef)
+            .filter(i -> i.getOpcode().equals("INVOKE") && i.getOperandValueIdsList().get(0).contains("asList"))
+            .findFirst().orElseThrow();
+        assertEquals("java:java.util.List", values.get(asListInvoke.getResultValueId()).getTypeId(),
+            "Arrays.asList result must be typed java.util.List");
+        // And a subtype->supertype receiver side: max(Collection) with a List argument.
+        assertTrue(extracted.stream().filter(Cir.Record::hasDiagnostic).map(Cir.Record::getDiagnostic)
+            .noneMatch(d -> d.getCode().equals("E_TYPE_MISMATCH")));
+    }
 }

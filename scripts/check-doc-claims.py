@@ -87,10 +87,29 @@ CLAIMS = [
         "check": "(cd adapters/go && go test ./internal/lower/ -run TestSignatureTypeNamesDoNotLeak -count=1)",
     },
     {
+        "id": "go-any-interface-canonical",
+        "docs": ["docs/validation/realworld.md"],
+        "assertion": "L'adaptateur Go canonicalise l'alias `any` sur `interface{}` (CALL reflect.ValueOf / mapstructure réel valides).",
+        "check": "(cd adapters/go && go test ./internal/lower/ -run TestAnyInterfaceTypeIdentity -count=1)",
+    },
+    {
+        "id": "rust-overflow-checks-off",
+        "docs": ["docs/validation/realworld.md"],
+        "assertion": "La caméra MIR Rust désactive les checks de débordement (-Coverflow-checks=off) : boucles et arithmétique `+ - << -x` représentables sans MIR_UNSUPPORTED.",
+        "check": "(cd adapters/rust && cargo test --test adapter rust_loops_and_arithmetic_representable -- --exact)",
+        "expect_test": "rust_loops_and_arithmetic_representable",
+    },
+    {
         "id": "java-array-float-sound",
         "docs": ["docs/validation/realworld.md"],
         "assertion": "L'adaptateur Java ne crée pas de SSA orphelin (*a[i]=v) et rend l'arithmétique IEEE_FLOAT opaque.",
         "check": "(cd adapters/java && mvn -B -q test -Dtest=AdapterTest#array_store_and_float_arithmetic_are_valid_or_opaque -DfailIfNoTests=false)",
+    },
+    {
+        "id": "java-subtype-invoke-result",
+        "docs": ["docs/validation/realworld.md"],
+        "assertion": "L'adaptateur Java type le slot d'un invite à retour déclaré plus précis que le local JVM (List vs Object) : résultat INVOKE = type retour déclaré, pas E_TYPE_MISMATCH.",
+        "check": "(cd adapters/java && mvn -B -q test -Dtest=AdapterTest#subtype_to_supertype_invoke_is_modeled -DfailIfNoTests=false)",
     },
     {
         "id": "mcp-explain-no-source-read",

@@ -234,10 +234,12 @@ final class Extractor {
             return v;
         }
         String localType(Value value) {
-            // JVM computational locals use int for the narrow integral family. SootUp's
-            // type assigner may infer boolean from a local initialized to literal zero.
-            String name = value.getType().toString();
-            return type(Set.of("boolean", "byte", "short", "char").contains(name) ? "int" : name);
+            // Keep boolean, byte, short and char as their declared types: narrowing to
+            // int at the SSA-slot level breaks boolean invoke results (BOOL return vs int
+            // local) and char/byte switches (tag vs case-constant type). JVM widening to
+            // int is applied explicitly where computation needs it (widenToInt in binops,
+            // coerce in call args / returns / case constants).
+            return type(value.getType().toString());
         }
         String coerce(String value, String target) {
             String actual = valueTypes.get(value);
@@ -255,6 +257,12 @@ final class Extractor {
             }
             return result;
         }
+        // JVM promotes byte/short/char to int in arithmetic/comparison; the CIR core
+        // requires equal operand types, so widen narrow BITVECTOR operands to int.
+        String widenToInt(String value) {
+            String t = valueTypes.get(value);
+            return Set.of("java:byte", "java:short", "java:char").contains(t) ? coerce(value, type("int")) : value;
+        }
         Cir.OperationPayload opaque(String construct) {
             return Cir.OperationPayload.newBuilder().setOpaque(Cir.OpaqueSemantics.newBuilder()
                 .setSourceConstruct(construct).setReason("Java semantics not modeled")
@@ -265,6 +273,15 @@ final class Extractor {
             add(instruction("OPAQUE_OP", false).setResultValueId(v).setPayload(opaque(value.toString())).build());
             diagnostic(id, "UNSUPPORTED_INSTRUCTION", "EFFECTS", value.toString());
             diagnostic(id, "EXCEPTION_FLOW_PARTIAL", "INVENTORY", "Implicit exceptions of " + value + " not inventoried");
+            return v;
+        }
+        // An opaque boolean: a comparison outcome that cannot be modeled exactly is
+        // still a boolean. SootUp reports the JVM comparison-result type as int, so
+        // typing via value.getType() would yield a BITVECTOR guard; force BOOL.
+        String opaqueBool(Value value) {
+            String v = ssa(type("boolean"));
+            add(instruction("OPAQUE_OP", false).setResultValueId(v).setPayload(opaque(value.toString())).build());
+            diagnostic(id, "UNSUPPORTED_INSTRUCTION", "SYMBOLIC", "Opaque boolean comparison " + value);
             return v;
         }
 
@@ -310,7 +327,23 @@ final class Extractor {
             // non-Local LHS whose pre-allocated value would never be defined by their UNKNOWN_EFFECT
             // lowering, producing an orphaned SSA value rejected by the core (E_SSA_DOMINANCE).
             for (Stmt s : statements) s.getDef().ifPresent(v -> {
-                if (v instanceof Local && definitions.get(v) == 1 && !values.containsKey(v)) values.put(v, ssa(localType(v)));
+                if (v instanceof Local && definitions.get(v) == 1 && !values.containsKey(v)) {
+                    String t;
+                    if (s instanceof JAssignStmt a && a.getRightOp() instanceof AbstractInvokeExpr inv && a.getLeftOp() == v) {
+                        // Type the slot by the invoke's declared return type: the value assigned to
+                        // the local IS the invoke result, and the CIR validator requires the INVOKE
+                        // result value to equal the callee's declared return type (§CIR CALL). The
+                        // JVM-visible local type can be wider than the declared return (e.g. a local
+                        // typed java.lang.Object receiving java.util.List from Arrays.asList), and
+                        // typing the slot by the local type would make the INVOKE result mismatch and
+                        // abort the whole unit with E_TYPE_MISMATCH on real code (effective-java
+                        // item30 `max(argList)`).
+                        t = type(inv.getType().toString());
+                    } else {
+                        t = localType(v);
+                    }
+                    values.put(v, ssa(t));
+                }
             });
             add(Cir.FunctionDef.newBuilder().setId(id).setSymbolId(id + "/symbol").addAllParameterValueIds(paramIds)
                 .addAllReturnTypeIds(returnTypes).setEntryBlockId(blocks.get(body.getStmtGraph().getStartingStmt())).build());
@@ -357,19 +390,30 @@ final class Extractor {
                 };
                 if (op.isEmpty()) return opaqueValue(v);
                 String left = value(binary.getOp1()), right = value(binary.getOp2());
-                // The CIR core only encodes arithmetic over BITVECTOR, ordering over
-                // BITVECTOR, and equality over matching non-float sorts. IEEE_FLOAT and
-                // OPAQUE operands (the documented float/opaque boundary) must stay opaque
-                // instead of emitting an instruction the core rejects (E_TYPE_MISMATCH).
+                // JVM promotes every byte/short/char operand to int before arithmetic
+                // and comparison; model that explicitly so `byte & 0xff`, `char > x`,
+                // `short + int` operate on java:int on both sides (the CIR core
+                // requires identical operand types for BITVECTOR ops).
                 boolean arithmetic = Set.of("ADD", "SUB", "MUL", "DIV", "REM", "BIT_AND", "BIT_OR", "XOR").contains(op);
                 boolean order = Set.of("LT", "LE", "GT", "GE").contains(op);
                 boolean equality = op.equals("EQ") || op.equals("NE");
+                if (arithmetic || order) {
+                    left = widenToInt(left);
+                    right = widenToInt(right);
+                }
                 String lhs = valueTypes.get(left), rhs = valueTypes.get(right);
                 boolean modeled = true;
                 if (arithmetic || order)
                     modeled = isBitvector(lhs) && isBitvector(rhs);
                 else if (equality)
                     modeled = !isFloat(lhs) && !isFloat(rhs) && lhs.equals(rhs);
+                // A comparison that cannot be modeled exactly (e.g. `ref == null`,
+                // `flag == 0` after a call, a ternary on a non-boolean) is still a
+                // boolean outcome. Emitting it as an opaque `int` (SootUp reports the
+                // JVM comparison result type as int) would produce a BITVECTOR BRANCH
+                // guard that the core rejects (E_TYPE_MISMATCH). Fall back to an opaque
+                // BOOL value instead: the guard stays a boolean whose value is unknown.
+                if (!modeled && (arithmetic || order || equality)) return opaqueBool(v);
                 if (!modeled) return opaqueValue(v);
                 String result = ssa(type((equality || order) ? "boolean" : v.getType().toString()));
                 var inst = instruction(op, false).setResultValueId(result).addOperandValueIds(left).addOperandValueIds(right);
@@ -401,7 +445,10 @@ final class Extractor {
                 return;
             }
             if (s instanceof JSwitchStmt sw) {
-                String key = value(sw.getKey());
+                // JVM lowers every switch tag to int (byte/short/char are widened);
+                // SootUp emits the case constants as IntConstant. Keep the tag on the
+                // same int type so tag.type_id == const.type_id (CIR SWITCH rule).
+                String key = widenToInt(value(sw.getKey()));
                 var inst = instruction("SWITCH", true).addOperandValueIds(key);
                 // Constants must precede the terminator in the stream, but are not instructions.
                 var groups = new LinkedHashMap<Stmt, List<String>>();

@@ -13,6 +13,16 @@ func (l *lowerer) typ(t types.Type) string {
 	if t == nil {
 		return l.typeRecord(&cir.TypeDef{Id: "go:void", Kind: "VOID"})
 	}
+	// Go 1.18+ predeclared aliases (`any`, and go/types 1.22+ also materializes
+	// `byte`/`rune` this way) are *types.Alias nodes. Collapse them onto the
+	// aliased type so `any` and `interface{}` share one type id: TypeString
+	// renders the alias as "any" and the explicit spelling as "interface{}",
+	// and the CIR validator checks CALL/INVOKE parameters by exact type-id
+	// equality, so a mixed boundary (e.g. reflect.ValueOf takes `any` while the
+	// caller's field is `interface{}`) would abort ingest with E_TYPE_MISMATCH.
+	if alias, ok := t.(*types.Alias); ok {
+		return l.typ(types.Unalias(alias))
+	}
 	if b, ok := t.(*types.Basic); ok && b.Info()&types.IsUntyped != 0 {
 		t = types.Default(t)
 	}
