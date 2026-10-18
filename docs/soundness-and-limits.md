@@ -210,7 +210,7 @@ Limites v0.5 (bornes assumées, non des défauts) :
   l'adaptateur Go de confiance ; l'adaptateur est le seul producteur de
   spans. Aucun texte « métier » n'est inventé (`behavior_no_business_text`).
 
-## v0.6 — frontières par langage (jalon en cours)
+## v0.6 — frontières par langage (validée)
 
 ### Go
 
@@ -237,13 +237,15 @@ Le chargement ne lance ni Cargo ni build.rs ni proc macros tiers.
 
 ### Java
 
-Pilote SootUp/Jimple en cours d'intégration, bytecode cible 17, runtime local
-24.0.1. Lecture de classes et sources, pas de lancement du build étudié.
-La réflexion et les cibles dynamiques restent ouvertes (`world_closed=false`).
-Les mappings source inexacts et gardes d'exceptions non modélisées doivent
-rester explicites. Aucun résultat du lot Java n'est encore certifié ici.
+Pilote SootUp/Jimple intégré, bytecode cible 17, runtime 24.0.1 (voir
+`docs/validation/v0.6.md` pour les AC rejoués). Lecture de classes et sources,
+pas de lancement du build étudié.
+La réflexion et les cibles dynamiques restent ouvertes (`world_closed=false`) ;
+les mappings source inexacts et gardes d'exceptions non modélisées restent
+explicites. La relecture Java est validée dans son périmètre borné, avec les
+mêmes inconnues conservatrices que le reste du moteur.
 
-## v0.7 — API de connaissance, MCP et LLM optionnel (jalon en cours)
+## v0.7 — API de connaissance, MCP et LLM optionnel (validée)
 
 ### Couche API/MCP
 
@@ -282,5 +284,7 @@ rester explicites. Aucun résultat du lot Java n'est encore certifié ici.
   produit par un LLM n'est utilisée comme preuve d'inaccessibilité.
 - Le Context Builder est une borne d'estimation (`ceil(caractères/4)`), pas une
   tokenisation d'un modèle précis.
-- Le benchmark `ske-bench` (AC-0.7-10) et la campagne complète v0.7 restent à
-  exécuter (voir `docs/validation/v0.7.md`).
+- Le benchmark `ske-bench` (AC-0.7-10) a été exécuté réellement (deux bras,
+  déterminisme ×2, intégrité) et la campagne complète v0.7 validée librement
+  rejouée ; ces résultats et les limites de mesure sont documentés dans
+  `docs/validation/v0.7.md`.

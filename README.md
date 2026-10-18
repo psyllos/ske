@@ -17,10 +17,23 @@ sont explicites dans `docs/soundness-and-limits.md`.
 **v0.4 validée : 14 AC PASS**, `VERIFY OK v0.4` ; non-régression
 42 AC v0.1 + 25 AC v0.2 + 29 AC v0.3. Graphe d'appels, résumés bornés,
 intervalles et interprétation concrète CIR sont disponibles dans le périmètre
-documenté. Voir [la validation v0.4](docs/validation/v0.4.md).
+documenté.
+**v0.5 validée : 13 AC PASS**, `VERIFY OK v0.5` ; non-régression
+des 110 AC antérieurs. Comportements, règles R1–R6, réutilisation des résumés
+entre snapshots. Voir [la validation v0.5](docs/validation/v0.5.md).
+**v0.6 validée : 14 AC PASS**, `VERIFY OK v0.6` ; non-régression des 123 AC
+antérieurs. Adaptateurs Rust (MIR) et Java (SootUp/Jimple) isolés,
+ingestion multi-langage et CIR v1 figée (`cir-v1.0-frozen`). Voir
+[la validation v0.6](docs/validation/v0.6.md).
+**v0.7 validée : 11 AC PASS**, `VERIFY OK v0.7` ; non-régression des 137 AC
+antérieurs. `ske-api` (services §11.7, DTO, HTTP/JSON loopback), `ske-mcp`
+(outils + serveur stdio JSON-RPC), Context Builder et LLM optionnel avec
+provenance et confidentialité. Voir [la validation v0.7](docs/validation/v0.7.md).
 Lire [le journal de reprise](docs/work-log.md) et
 [le rapport de blocage](docs/validation/BLOCKED-v0.2-quota.md).
-Il n'existe pas de livraison v0.7 ni de promesse d'API/MCP opérationnels.
+Les AC de chaque jalon sont rejoués par `python3 scripts/validate-v0X.py` ;
+les limites et frontières assumées sont documentées dans
+`docs/soundness-and-limits.md` et les ADR.
 
 ## Environnement
 
@@ -62,7 +75,7 @@ persistées ; un run laissé `RUNNING` après un crash exige un
 ## Parcours v0.1 depuis la racine
 
 Le parcours CIR est disponible ; `verify.sh` inclut maintenant le Go et termine
-par `VERIFY OK v0.4`. Ne pas exécuter
+par `VERIFY OK v0.7`. Ne pas exécuter
 le code du projet étudié : les fixtures Go servent ici de sources et provenance.
 
 ```sh
@@ -122,5 +135,5 @@ le défaut reste `"unroll"`.
 - [Architecture](docs/architecture.md)
 - [Soundness et limites](docs/soundness-and-limits.md)
 - [Contrat adaptateur](docs/adapter-contract.md)
-- [ADR](docs/adr/ADR-001.md) (001 à 021)
+- [ADR](docs/adr/ADR-001.md) (001 à 023)
 - [Mesures](tests/benchmarks/README.md)

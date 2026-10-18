@@ -8,10 +8,13 @@ de référence macOS arm64, Rust 1.99.0. SQLite local est le seul stockage de
 référence. Pas d'interface graphique. Go 1.27.1 est disponible pour un futur
 adaptateur indépendant, pas nécessaire à l'import de fixtures.
 
-**État : v0.1 validée, 42 AC PASS** (`validation/v0.1.md`). CIR/prost,
-stockage, import, query, CLI et graphes (dominance CHK, DFS, SCC) sont intégrés.
-v0.2 Go est validée (25 AC), v0.3 (29 AC) et v0.4 (14 AC) également.
-Le journal et `validation/v0.4.md` détaillent le checkpoint courant.
+**État : v0.1 à v0.7 validées** (42 + 25 + 29 + 14 + 13 + 14 + 11 AC PASS, avec
+non-régression complète rejouée à chaque jalon). CIR/prost,
+stockage, import, query, CLI, graphes (dominance CHK, DFS, SCC), moteur
+symbolique/SMT (v0.3), résumés interprocéduraux et intervalles (v0.4),
+comportements/règles (v0.5), adaptateurs Rust/Java (v0.6) et API/MCP/LLM
+(v0.7) sont intégrés. Le journal et les rapports `docs/validation/v0.X.md`
+détaillent chaque checkpoint.
 
 ## Flux v0.1
 

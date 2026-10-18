@@ -1700,3 +1700,42 @@ v0.7 en cours : crates `ske-api`, `ske-mcp`, tests, scripts, docs). Aucun push
 ni merge vers une branche partagée n'a été effectué — à demander au
 commanditaire avant toute livraison. `docs/validation/v0.7.md` et
 `docs/implementation-status.md` reflètent désormais les 11 AC PASS.
+
+## Revue complète du projet — quatre recommandations intégrées (post-v0.7)
+
+Revue complète (tests, conception, performance/fiabilité) sur le jalon v0.7
+par le coordinateur ; `cargo test --workspace` (370 tests), clippy `-D
+warnings`, fmt, `check-deps.sh` et campagne `validate-v07.py` (11 AC + 137
+non-régression) rejoués avant intégration. Quatre recommandations intégrées :
+
+1. **Normalisation `Cargo.toml` sur `workspace = true`** : les crates
+   `ske-behavior`, `ske-solver`, `ske-summary`, `ske-symbolic`, `ske-verify`
+   et `toml` sont ajoutés à `[workspace.dependencies]` ; toutes les références
+   `ske-* = { path = "../ske-*" }` des crates réécrites en `X.workspace = true`.
+   `Cargo.lock` inchangé (résolution identique).
+2. **Consolidation N+1 `list_rules` / `list_function_rules`** : extraction
+   `enrich_rule`, `rule_columns`, `rule_by_key` et `list_rules_for_function` ;
+   `get_rule_evidence` et `list_function_rules` ne parcourent plus toutes les
+   règles par requête (O(N) au lieu d'O(N×pages)). Parsex d'ids explicitement
+   mappés (`E_INTERNAL`) au lieu d'`.unwrap()`.
+3. **Documentation** : `README.md`, `docs/architecture.md`,
+   `docs/soundness-and-limits.md` alignés sur l'état v0.7 validé (plus de
+   référence « pas de livraison v0.7 » / « jalon en cours ») ; `ADR` 001–023.
+4. **Séparation artefacts / promotion documentaire** : les validateurs
+   v0.3–v0.5 écrivent leur rapport dans `target/validation-v0X/report.md` et
+   ne modifient plus `docs/validation/v0.X.md` qu'avec `SKE_PROMOTE_DOC=1`.
+   Une campagne (y compris la chaîne de non-régression) ne peut plus écraser
+   l'encadrement « validée » maintenu à la main. Nouveau test
+   `scripts/test_promote_doc.py` (6 cas : 3 validateurs × 2 modes).
+   `docs/validation/review-v0.7-open.md` point 8 documenté en partie traité
+   (la vérification des identifiants AC des artefacts prédécesseurs reste
+   ouverte).
+
+Preuves d'intégration : `cargo test --workspace --locked` 370/0 PASS,
+`cargo fmt --check`, clippy strict, `check-deps.sh`, 20 tests unitaires des
+harnais (`test_validate_v0*.py` + `test_promote_doc.py`) — tous verts. La
+campagne complète v0.7 n'a pas été relancée après cette intégration : les
+changements sont des correctifs de maintenance (aucun changement de
+comportement des AC), couverts par les tests workspace et le harnais. Un
+`SKE_PROMOTE_DOC=1` n'est nécessaire que pour régénérer délibérément les docs
+suivies lors d'une future campagne.
