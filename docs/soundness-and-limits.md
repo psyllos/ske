@@ -242,3 +242,45 @@ Pilote SootUp/Jimple en cours d'intégration, bytecode cible 17, runtime local
 La réflexion et les cibles dynamiques restent ouvertes (`world_closed=false`).
 Les mappings source inexacts et gardes d'exceptions non modélisées doivent
 rester explicites. Aucun résultat du lot Java n'est encore certifié ici.
+
+## v0.7 — API de connaissance, MCP et LLM optionnel (jalon en cours)
+
+### Couche API/MCP
+
+- `ske-api` ne dépend jamais directement de `rusqlite` (contrôle AC-0.7-01 via
+  `cargo tree`) ; toute lecture passe par les DTO de `ske-query`. La DTO indépendante
+  de SQLite est testée par les tests `dto_*` (pagination, troncature, clés requises).
+- Le transport MCP est **stdlib JSON-RPC 2.0** (aucun service distant) : les cinq
+  outils (`inspect`, `branches`, `explain`, `rules`, `impact`) sont testés en
+  process et via `ske-mcp-server`. Une troncature de `paths explore`/`explain`
+  n'est jamais présentée comme complète (`truncated`/`truncation_reason` /
+  `visited_count`/`frontier_count`).
+- `explain` ne relit jamais le fichier source ; il rend le statut, les hypothèses
+  du run, les arrivées avec le texte SMT-LIB persisté et le verdict du
+  vérificateur. `impact` est conservateur : il marque `incomplete:true` dès
+  qu'un chemin traverse un appel non résolu/externe/dynamique et ne conclut
+  jamais « pas d'impact » sur un graphe d'appels non clos.
+
+### LLM (optionnel)
+
+- Aucun token dépensé dans la validation : le transport injecté (`LlmTransport`)
+  est scripté ; le cas testé « serveur compatible OpenAI » est un mock local.
+  Sans configuration LLM (`enabled=false`), aucun process/transport n'est appelé
+  (AC-0.7-07, réseau bloqué).
+- Les règles `LLM_INFERRED` sont persistées avec `prompt_version`, `llm_model`,
+  `model_parameters` et `validation_status='UNVALIDATED'` ; les règles
+  déterministes sont inchangées (comparaison avant/après). `prop_no_llm_proof` :
+  une règle LLM n'est jamais référencée comme preuve (pas de `behavior_case_id`,
+  donc hors de toute dérivation de preuve).
+- Confidentialité : sans `--allow-source-upload` **et** consentement enregistré,
+  le corps de requête ne contient que des faits structurés (AC-0.7-09).
+
+### Limites restantes
+
+- L'enrichissement LLM réel (transport HTTPS OpenAI) n'est pas fourni dans le
+  cœur verrouillé : `LlmTransport` est l'extension documentée. Aucune règle
+  produit par un LLM n'est utilisée comme preuve d'inaccessibilité.
+- Le Context Builder est une borne d'estimation (`ceil(caractères/4)`), pas une
+  tokenisation d'un modèle précis.
+- Le benchmark `ske-bench` (AC-0.7-10) et la campagne complète v0.7 restent à
+  exécuter (voir `docs/validation/v0.7.md`).
