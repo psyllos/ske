@@ -42,12 +42,8 @@ impl Query {
         let sid = self
             .closed_snapshot(snapshot, repository)?
             .parse::<i64>()
-            .unwrap();
-        let offset = one(self.db(),
-            "SELECT (SELECT COUNT(*) FROM functional_rules WHERE snapshot_id=?1 AND rule_key<?2) AS position FROM functional_rules WHERE snapshot_id=?1 AND rule_key=?2",
-            params![sid,key])?["position"].as_u64().unwrap() as usize;
-        let mut listed = behavior::list_rules(self.db(), sid, true, 1, offset)?;
-        let mut item = listed["rules"].as_array_mut().unwrap().remove(0);
+            .map_err(|e| Error::new("E_INTERNAL", format!("invalid snapshot id: {e}")))?;
+        let mut item = behavior::rule_by_key(self.db(), sid, key, true)?;
         item["page"] = page(1, 0, 1);
         Ok(item)
     }
@@ -62,25 +58,19 @@ impl Query {
         limit: usize,
         offset: usize,
     ) -> Result<Value> {
-        let sid = self.closed_snapshot(snapshot, repository)?;
-        let (fid, _) = self.function(&sid, repository, function)?;
-        let sid = sid.parse::<i64>().unwrap();
-        let keys = rows(self.db(), "SELECT fr.rule_key FROM functional_rules fr JOIN behavior_cases bc ON bc.id=fr.behavior_case_id JOIN behavior_scenarios bs ON bs.id=bc.behavior_id WHERE fr.snapshot_id=?1 AND bs.entry_function_id=?2 ORDER BY fr.rule_key",params![sid,fid])?;
-        let total = keys.len();
-        let mut rules = Vec::new();
-        for key in keys.into_iter().skip(offset).take(limit.min(10000)) {
-            let mut rule = self.get_rule_evidence(
-                &sid.to_string(),
-                repository,
-                key["rule_key"].as_str().unwrap(),
-            )?;
-            rule.as_object_mut().unwrap().remove("page");
-            if !with_evidence {
-                rule.as_object_mut().unwrap().remove("evidence");
-            }
-            rules.push(rule);
-        }
-        Ok(json!({"snapshot_id":sid,"rules":rules,"page":page(limit.min(10000),offset,total)}))
+        let sid = self
+            .closed_snapshot(snapshot, repository)?
+            .parse::<i64>()
+            .map_err(|e| Error::new("E_INTERNAL", format!("invalid snapshot id: {e}")))?;
+        let (fid, _) = self.function(&sid.to_string(), repository, function)?;
+        behavior::list_rules_for_function(
+            self.db(),
+            sid,
+            fid,
+            with_evidence,
+            limit.min(10000),
+            offset,
+        )
     }
 
     /// Structural fingerprints, not inventory counts. Missing fingerprints are explicit gaps.

@@ -788,7 +788,93 @@ fn outcome_identity(db: &Connection, snapshot: i64, id: i64) -> Result<(String, 
     Ok((label, unit))
 }
 
+/// Build one public rule item from its raw `functional_rules` row, optionally
+/// attaching evidence anchors (§11.2). The input row must carry the columns
+/// selected by `rule_columns`.
+fn enrich_rule(db: &Connection, snapshot: i64, with_evidence: bool, rule: &Value) -> Result<Value> {
+    let rule_id = rule["id"].as_i64().unwrap();
+    let mut item = rule.clone();
+    item.as_object_mut().unwrap().remove("id");
+    item.as_object_mut().unwrap().remove("behavior_case_id");
+    if item.get("prompt_version").and_then(Value::as_str).is_none() {
+        item.as_object_mut().unwrap().remove("prompt_version");
+        item.as_object_mut().unwrap().remove("llm_model");
+        item.as_object_mut().unwrap().remove("model_parameters");
+    }
+    if with_evidence {
+        let evidence = rows(
+            db,
+            "SELECT ke.relation,
+                    COALESCE(sp_span.span,'') AS span,
+                    ke.ir_outcome_id, ke.summary_case_id, ke.source_span_id
+             FROM knowledge_evidence ke
+             LEFT JOIN (SELECT ss.id, sf.path||':'||ss.start_line||':'||ss.start_column||'-'||ss.end_line||':'||ss.end_column AS span
+                        FROM source_spans ss JOIN source_files sf ON sf.id=ss.source_file_id) sp_span
+               ON sp_span.id=ke.source_span_id
+             WHERE ke.functional_rule_id=?1 ORDER BY ke.id",
+            [rule_id],
+        )?;
+        let mut anchors = Vec::new();
+        for e in evidence {
+            let relation = e["relation"].clone();
+            if let Some(id) = e["ir_outcome_id"].as_i64() {
+                let (label, unit) = outcome_identity(db, snapshot, id)?;
+                anchors.push(
+                    json!({"kind":"ir_outcome","id":label,"unit_key":unit,"relation":relation}),
+                );
+            } else if let Some(id) = e["summary_case_id"].as_i64() {
+                anchors.push(summary_evidence(db, snapshot, id, &relation)?);
+            } else if e["source_span_id"].is_i64() {
+                anchors.push(json!({"kind":"source_span","span":e["span"],"relation":relation}));
+            } else {
+                return Err(Error::new("E_DB_INTEGRITY", "unsupported evidence anchor"));
+            }
+        }
+        item["evidence"] = json!(anchors);
+    }
+    Ok(item)
+}
+
+/// Row columns shared by `list_rules`, `rule_by_key` and
+/// `list_rules_for_function` so all produce the same enriched item (§11.2).
+/// `alias` qualifies every column so a JOIN never hits an ambiguous id
+/// (`fr` when joining against behavior_cases/scenarios, empty otherwise).
+fn rule_columns(alias: &str) -> String {
+    let q = if alias.is_empty() {
+        String::new()
+    } else {
+        format!("{alias}.")
+    };
+    format!(
+        "{q}id,{q}rule_key,COALESCE({q}short_name,'') AS short_name,{q}description,\
+         {q}origin,{q}validation_status,{q}behavior_case_id,{q}prompt_version,{q}llm_model,{q}model_parameters"
+    )
+}
+
+/// Fetch one rule by its `rule_key` (snapshot-scoped) and enrich it. The raw
+/// row is loaded directly by key (E_NOT_FOUND if absent), so single-rule
+/// lookups avoid the rank-count and full relist that `list_rules(1, offset)`
+/// used to require.
+pub(crate) fn rule_by_key(
+    db: &Connection,
+    snapshot: i64,
+    key: &str,
+    with_evidence: bool,
+) -> Result<Value> {
+    let rule = super::one(
+        db,
+        &format!(
+            "SELECT {} FROM functional_rules WHERE snapshot_id=?1 AND rule_key=?2",
+            rule_columns("")
+        ),
+        params![snapshot, key],
+    )?;
+    enrich_rule(db, snapshot, with_evidence, &rule)
+}
+
 /// List functional rules for a snapshot, optionally with evidence (§11.2).
+/// Rules are loaded once (ordered by `rule_key`) and each page row is enriched
+/// in memory; pagination is by row position, identical to the previous contract.
 pub fn list_rules(
     db: &Connection,
     snapshot: i64,
@@ -798,9 +884,10 @@ pub fn list_rules(
 ) -> Result<Value> {
     let rules = rows(
         db,
-        "SELECT id,rule_key,COALESCE(short_name,'') AS short_name,description,
-                origin,validation_status,behavior_case_id,prompt_version,llm_model,model_parameters
-         FROM functional_rules WHERE snapshot_id=?1 ORDER BY rule_key",
+        &format!(
+            "SELECT {} FROM functional_rules WHERE snapshot_id=?1 ORDER BY rule_key",
+            rule_columns("")
+        ),
         [snapshot],
     )?;
     let total = rules.len();
@@ -811,48 +898,43 @@ pub fn list_rules(
         .collect::<Vec<_>>();
     let mut out = Vec::new();
     for rule in &page_rows {
-        let rule_id = rule["id"].as_i64().unwrap();
-        let mut item = rule.clone();
-        item.as_object_mut().unwrap().remove("id");
-        item.as_object_mut().unwrap().remove("behavior_case_id");
-        if item.get("prompt_version").and_then(Value::as_str).is_none() {
-            item.as_object_mut().unwrap().remove("prompt_version");
-            item.as_object_mut().unwrap().remove("llm_model");
-            item.as_object_mut().unwrap().remove("model_parameters");
-        }
-        if with_evidence {
-            let evidence = rows(
-                db,
-                "SELECT ke.relation,
-                        COALESCE(sp_span.span,'') AS span,
-                        ke.ir_outcome_id, ke.summary_case_id, ke.source_span_id
-                 FROM knowledge_evidence ke
-                 LEFT JOIN (SELECT ss.id, sf.path||':'||ss.start_line||':'||ss.start_column||'-'||ss.end_line||':'||ss.end_column AS span
-                            FROM source_spans ss JOIN source_files sf ON sf.id=ss.source_file_id) sp_span
-                   ON sp_span.id=ke.source_span_id
-                 WHERE ke.functional_rule_id=?1 ORDER BY ke.id",
-                [rule_id],
-            )?;
-            let mut anchors = Vec::new();
-            for e in evidence {
-                let relation = e["relation"].clone();
-                if let Some(id) = e["ir_outcome_id"].as_i64() {
-                    let (label, unit) = outcome_identity(db, snapshot, id)?;
-                    anchors.push(
-                        json!({"kind":"ir_outcome","id":label,"unit_key":unit,"relation":relation}),
-                    );
-                } else if let Some(id) = e["summary_case_id"].as_i64() {
-                    anchors.push(summary_evidence(db, snapshot, id, &relation)?);
-                } else if e["source_span_id"].is_i64() {
-                    anchors
-                        .push(json!({"kind":"source_span","span":e["span"],"relation":relation}));
-                } else {
-                    return Err(Error::new("E_DB_INTEGRITY", "unsupported evidence anchor"));
-                }
-            }
-            item["evidence"] = json!(anchors);
-        }
-        out.push(item);
+        out.push(enrich_rule(db, snapshot, with_evidence, rule)?);
+    }
+    Ok(json!({"snapshot_id":snapshot,"rules":out,"page":super::page(limit, offset, total)}))
+}
+
+/// List rules whose scenario is anchored on `function` (v0.7, AC-0.7-03/05).
+/// One query loads the function's rule rows ordered by `rule_key`; each page
+/// row is enriched in memory. This replaces the former per-rule
+/// `get_rule_evidence` loop (a rank count + full relist per rule).
+pub(crate) fn list_rules_for_function(
+    db: &Connection,
+    snapshot: i64,
+    function: i64,
+    with_evidence: bool,
+    limit: usize,
+    offset: usize,
+) -> Result<Value> {
+    let rules = rows(
+        db,
+        &format!(
+            "SELECT {} FROM functional_rules fr
+             JOIN behavior_cases bc ON bc.id=fr.behavior_case_id
+             JOIN behavior_scenarios bs ON bs.id=bc.behavior_id
+             WHERE fr.snapshot_id=?1 AND bs.entry_function_id=?2 ORDER BY fr.rule_key",
+            rule_columns("fr")
+        ),
+        params![snapshot, function],
+    )?;
+    let total = rules.len();
+    let page_rows = rules
+        .into_iter()
+        .skip(offset)
+        .take(limit)
+        .collect::<Vec<_>>();
+    let mut out = Vec::new();
+    for rule in &page_rows {
+        out.push(enrich_rule(db, snapshot, with_evidence, rule)?);
     }
     Ok(json!({"snapshot_id":snapshot,"rules":out,"page":super::page(limit, offset, total)}))
 }
