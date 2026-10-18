@@ -95,7 +95,8 @@ ne peuvent être éliminés pour obtenir artificiellement une preuve.
   UNKNOWN si une annulation interrompt la vérification.
 
 Les comportements/réutilisation v0.5 livrés ci-dessous le sont dans leur
-périmètre borné ; Rust/Java v0.6 et API/MCP/LLM v0.7 restent hors livraison.
+périmètre borné ; les frontières v0.6 (Rust/Java) et v0.7 (API/MCP/LLM) sont
+détaillées dans leurs sections respectives ci-après.
 Aucun code étudié arbitraire n'est exécuté ; seul le runner concret de
 confiance du dépôt est autorisé par les tests différentiels. Les commandes
 réellement exécutées sont dans les rapports de validation ; les obligations

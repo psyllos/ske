@@ -33,7 +33,27 @@ fn span(s: &Span) -> Result<()> {
     }
 }
 pub(crate) fn local(c: &Content) -> Result<()> {
-    match c {
+    let kind = match c {
+        Content::Header(_) => "Header",
+        Content::UnitDef(_) => "UnitDef",
+        Content::TypeDef(_) => "TypeDef",
+        Content::SymbolDef(_) => "SymbolDef",
+        Content::ValueDef(_) => "ValueDef",
+        Content::FunctionDef(_) => "FunctionDef",
+        Content::BlockDef(_) => "BlockDef",
+        Content::InstructionDef(_) => "InstructionDef",
+        Content::ControlEdgeDef(_) => "ControlEdgeDef",
+        Content::SourceFileDef(_) => "SourceFileDef",
+        Content::SourceDecisionDef(_) => "SourceDecisionDef",
+        Content::SourceIrLink(_) => "SourceIrLink",
+        Content::SourceOutcomeActivationCase(_) => "SourceOutcomeActivationCase",
+        Content::ImplicitExitSite(_) => "ImplicitExitSite",
+        Content::CallTargetDef(_) => "CallTargetDef",
+        Content::Diagnostic(_) => "Diagnostic",
+        Content::EndUnit(_) => "EndUnit",
+    };
+    let result = (|| -> Result<()> {
+        match c {
         Content::TypeDef(v) => ske_cir::validate_type(v)?,
         Content::SymbolDef(v) => {
             known(
@@ -102,7 +122,17 @@ pub(crate) fn local(c: &Content) -> Result<()> {
         }
         _ => (),
     }
-    Ok(())
+        Ok(())
+    })();
+    result.map_err(|e| {
+        let id = match c {
+            Content::TypeDef(v) => v.id.clone(),
+            Content::ValueDef(v) => v.id.clone(),
+            Content::InstructionDef(v) => format!("{}:{}", v.id, v.opcode),
+            _ => String::new(),
+        };
+        err(e.code.as_str(), format!("[{kind} {id}] {}", e.message))
+    })
 }
 pub(crate) fn references(u: &Unit<'_>, c: &Content) -> Result<()> {
     let check = |space: &str, id: &str| u.get(space, id).map(|_| ());
@@ -344,11 +374,21 @@ fn function(u: &Unit<'_>, id: i64) -> Result<()> {
             if matches!(i.opcode.as_str(), "BRANCH" | "SWITCH") && i.operand_value_ids.is_empty() {
                 return Err(err("E_ARITY_MISMATCH", &i.id));
             }
-            ske_cir::validate_edges(i, &outgoing, &values)?;
+            ske_cir::validate_edges(i, &outgoing, &values).map_err(|e| {
+                err(
+                    e.code.as_str(),
+                    format!("[edges fn={} {}/{}] {}", def.id, i.id, i.opcode, e.message),
+                )
+            })?;
         }
     }
     for i in &instructions {
-        ske_cir::validate_instruction(i, &types, &values)?;
+        ske_cir::validate_instruction(i, &types, &values).map_err(|e| {
+            err(
+                e.code.as_str(),
+                format!("[instr fn={} {}/{}] {}", def.id, i.id, i.opcode, e.message),
+            )
+        })?;
         if i.opcode == "RETURN" {
             if i.operand_value_ids.len() != def.return_type_ids.len() {
                 return Err(err("E_ARITY_MISMATCH", &i.id));

@@ -6,6 +6,7 @@ import java.io.*;
 import java.nio.*;
 import java.nio.file.*;
 import java.util.*;
+import java.util.stream.*;
 import javax.tools.ToolProvider;
 import org.junit.jupiter.api.*;
 import ske.adapter.v1.Adapter;
@@ -198,5 +199,57 @@ class AdapterTest {
         assertFalse(stale.stream().filter(Cir.Record::hasSourceDecisionDef)
             .flatMap(r -> r.getSourceDecisionDef().getOutcomesList().stream())
             .anyMatch(Cir.SourceOutcomeDef::getActivationMappingComplete));
+    }
+
+    @Test void array_store_and_float_arithmetic_are_valid_or_opaque() throws Exception {
+        // Regression for two real-project failures:
+        //  - an array store `$a[i] = v` (a non-Local lhs) previously allocated a pre-defined
+        //    SSA slot that nothing ever defined -> E_SSA_DOMINANCE (undefined vN) in the core ;
+        //  - IEEE_FLOAT arithmetic (ADD/MUL over double) was emitted as-is ->
+        //    E_TYPE_MISMATCH, but the core only models BITVECTOR arithmetic.
+        Path project = Files.createTempDirectory(Path.of("target"), "ops-").toRealPath();
+        Files.createDirectories(project.resolve("src/main/java"));
+        Files.createDirectories(project.resolve("target/classes"));
+        Path java = project.resolve("src/main/java/Ops.java");
+        Files.writeString(java, """
+            public class Ops {
+                public static double avg(double a, double b) {
+                    return (a + b) / 2.0;
+                }
+                public static String fmt(int count, String label) {
+                    Object[] args = new Object[] { count, label, Boolean.TRUE };
+                    return String.format("%d %s %s", args);
+                }
+                public static int boundary(int n) {
+                    int[] t = new int[2];
+                    t[0] = n;
+                    t[1] = t[0] + 1;
+                    return t[1];
+                }
+            }
+            """);
+        assertEquals(0, ToolProvider.getSystemJavaCompiler().run(null, null, null, "--release", "17", "-g",
+            "-d", project.resolve("target/classes").toString(), java.toString()));
+        var extracted = new Extractor(project, Main.Profile.parse("")).extract();
+        // Every SSA value must be defined exactly once by a real instruction (no orphan).
+        var values = extracted.stream().filter(Cir.Record::hasValueDef).map(Cir.Record::getValueDef)
+            .filter(v -> v.getRole().equals("SSA")).map(Cir.ValueDef::getId).collect(Collectors.toSet());
+        var defined = extracted.stream().filter(Cir.Record::hasInstructionDef)
+            .map(Cir.Record::getInstructionDef).filter(i -> !i.getResultValueId().isEmpty())
+            .map(Cir.InstructionDef::getResultValueId).collect(Collectors.toSet());
+        values.removeAll(defined);
+        assertTrue(values.isEmpty(), "orphaned SSA values: " + values);
+        // The double arithmetic in avg() must be opaque (no BITVECTOR ADD/MUL over IEEE_FLOAT).
+        var arithmetic = extracted.stream().filter(Cir.Record::hasInstructionDef).map(Cir.Record::getInstructionDef)
+            .filter(i -> Set.of("ADD", "SUB", "MUL", "DIV", "REM").contains(i.getOpcode()))
+            .filter(i -> i.getBlockId().contains("avg")).toList();
+        assertTrue(arithmetic.isEmpty(), "float arithmetic leaked as bitvector op: " + arithmetic);
+        // ... and the float computation surfaces as an opaque operation with a diagnostic.
+        assertTrue(extracted.stream().filter(Cir.Record::hasInstructionDef)
+            .map(Cir.Record::getInstructionDef)
+            .anyMatch(i -> i.getBlockId().contains("avg") && i.getOpcode().equals("OPAQUE_OP")));
+        assertTrue(extracted.stream().filter(Cir.Record::hasDiagnostic).anyMatch(r ->
+            r.getDiagnostic().getAffectedFunctionId().contains("Ops: double avg")
+                && r.getDiagnostic().getCode().equals("UNSUPPORTED_INSTRUCTION")));
     }
 }

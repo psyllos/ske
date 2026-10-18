@@ -142,6 +142,85 @@ func sourceSSA(t *testing.T, text string) (*ssa.Package, *token.FileSet) {
 	}
 	return p, fs
 }
+
+// TestByteRuneAliasTypeIdentity guards the byte->uint8 / rune->int32
+// canonicalization in typ(). Real Go code regularly compares a string index
+// (uint8) against a byte/rune literal (a named basic kind that go/types
+// TypeStrings as "byte" / "rune"). Without canonical ids the adapter emits
+// two distinct type records of identical representation and the CIR core
+// rejects the comparison with E_TYPE_MISMATCH (operand types differ).
+func TestByteRuneAliasTypeIdentity(t *testing.T) {
+	p, fs := sourceSSA(t, `package p
+func F(s string) bool {
+	return s[0] != 'a' && s[1] != '\\'
+}
+func G(rs []rune) bool {
+	return rs[0] == 'x'
+}
+`)
+	r := Lower(p, fs, "/project", types.SizesFor("gc", "amd64"))
+	typesByID := map[string]*cir.TypeDef{}
+	values := map[string]*cir.ValueDef{}
+	for _, rec := range r.Records {
+		if d := rec.GetTypeDef(); d != nil {
+			typesByID[d.Id] = d
+		}
+		if d := rec.GetValueDef(); d != nil {
+			values[d.Id] = d
+		}
+	}
+	// No `byte`/`rune` records may survive: aliases must collapse onto
+	// their canonical basic type id, and there must not be two distinct
+	// 8-bit / 32-bit records for the same representation.
+	byteWide := 0
+	runeWide := 0
+	for id, td := range typesByID {
+		if td.Kind != "BITVECTOR" {
+			continue
+		}
+		if id == "go:byte" {
+			t.Fatalf("byte alias type survived canonicalization: %s", id)
+		}
+		if id == "go:rune" {
+			t.Fatalf("rune alias type survived canonicalization: %s", id)
+		}
+	}
+	for _, td := range typesByID {
+		if td.Kind != "BITVECTOR" {
+			continue
+		}
+		switch td.BitWidth {
+		case 8:
+			byteWide++
+		case 32:
+			runeWide++
+		}
+	}
+	if byteWide != 1 {
+		t.Fatalf("expected exactly one 8-bit BITVECTOR record, got %d", byteWide)
+	}
+	if runeWide != 1 {
+		t.Fatalf("expected exactly one 32-bit BITVECTOR record, got %d", runeWide)
+	}
+	// Every EQ/NE must have identical operand type ids and a BOOL result.
+	for _, rec := range r.Records {
+		i := rec.GetInstructionDef()
+		if i == nil || (i.Opcode != "EQ" && i.Opcode != "NE") {
+			continue
+		}
+		if len(i.OperandValueIds) != 2 {
+			t.Fatalf("EQ/NE arity: %v", i)
+		}
+		x := values[i.OperandValueIds[0]]
+		y := values[i.OperandValueIds[1]]
+		if x == nil || y == nil || x.TypeId != y.TypeId {
+			t.Fatalf("EQ/NE operand type mismatch: %v (%s vs %s)", i.Id, x.TypeId, y.TypeId)
+		}
+		if typesByID[x.TypeId].Kind != "BITVECTOR" {
+			t.Fatalf("EQ/NE operand not BITVECTOR: %v", i.Id)
+		}
+	}
+}
 func TestRealSSA(t *testing.T) {
 	p, fs := sourceSSA(t, `package p
 func helper(x int) int { return x+1 }

@@ -5,10 +5,12 @@ de `SKE_Specification_Implementation_v1.4.md`, sans les délimiteurs Markdown.
 Ne pas reformater cette migration publiée : SHA-256 des octets UTF-8 embarqués
 est conservé dans `schema_migrations`.
 
-Le schéma contient 47 tables : 46 dans la migration et `schema_migrations`
-créée par le runner. Il contient 21 triggers. Les identifiants numériques SQLite
-ne sont pas des identifiants CIR stables ; les clés locales portent le préfixe
-`unit_key|` qui doit être retiré à la frontière JSON.
+Le schéma installé contient 50 tables : les 46 tables de la migration
+`0001_initial.sql` (copie exacte §8.2) + les 3 tables de `0002_capabilities.sql`
++ `schema_migrations` créée par le runner. Il contient 21 triggers.
+Les identifiants numériques SQLite ne sont pas des identifiants CIR stables ;
+les clés locales portent le préfixe `unit_key|` qui doit être retiré à la
+frontière JSON.
 
 ## Ouverture et migration
 

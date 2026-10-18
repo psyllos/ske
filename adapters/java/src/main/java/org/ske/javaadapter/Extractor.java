@@ -34,6 +34,7 @@ final class Extractor {
     final List<Cir.Record> records = new ArrayList<>();
     final Map<String, String> valueTypes = new HashMap<>();
     final Set<String> types = new HashSet<>(), stubs = new HashSet<>();
+    final Map<String, String> typeKinds = new HashMap<>();
     final Set<String> projectMethods = new HashSet<>();
     long edges, decisions;
     boolean partial;
@@ -70,20 +71,33 @@ final class Extractor {
         String id = "java:" + name;
         if (types.add(id)) {
             var t = Cir.TypeDef.newBuilder().setId(id).setCanonicalDescriptor(id);
+            String kind;
             switch (name) {
-                case "void" -> t.setKind("VOID");
-                case "boolean" -> t.setKind("BOOL");
-                case "byte", "short", "int", "long", "char" -> t.setKind("BITVECTOR")
+                case "void" -> kind = "VOID";
+                case "boolean" -> kind = "BOOL";
+                case "byte", "short", "int", "long", "char" -> kind = "BITVECTOR";
+                case "float", "double" -> kind = "IEEE_FLOAT";
+                case "java.lang.String" -> kind = "STRING";
+                default -> kind = "OPAQUE";
+            }
+            switch (kind) {
+                case "VOID" -> t.setKind("VOID");
+                case "BOOL" -> t.setKind("BOOL");
+                case "BITVECTOR" -> t.setKind("BITVECTOR")
                     .setBitWidth(switch (name) { case "byte" -> 8; case "short", "char" -> 16; case "int" -> 32; default -> 64; })
                     .setIsSigned(!name.equals("char"));
-                case "float", "double" -> t.setKind("IEEE_FLOAT").setBitWidth(name.equals("float") ? 32 : 64);
-                case "java.lang.String" -> t.setKind("STRING");
+                case "IEEE_FLOAT" -> t.setKind("IEEE_FLOAT").setBitWidth(name.equals("float") ? 32 : 64);
+                case "STRING" -> t.setKind("STRING");
                 default -> t.setKind("OPAQUE");
             }
+            typeKinds.put(id, kind);
             add(t.build());
         }
         return id;
     }
+
+    boolean isBitvector(String typeId) { return "BITVECTOR".equals(typeKinds.get(typeId)); }
+    boolean isFloat(String typeId) { return "IEEE_FLOAT".equals(typeKinds.get(typeId)); }
 
     String functionType(String id, List<String> parameters, List<String> results) {
         String tid = id + "/type";
@@ -292,8 +306,11 @@ final class Extractor {
                 else if (identity.getRightOp() instanceof JThisRef) values.put(identity.getLeftOp(), paramIds.get(0));
             }
             // Allocate single-definition locals up front; assignments remain real SSA definitions.
+            // Only Local left-hand sides get an SSA slot: array/field stores (`$a[i] = v`) carry a
+            // non-Local LHS whose pre-allocated value would never be defined by their UNKNOWN_EFFECT
+            // lowering, producing an orphaned SSA value rejected by the core (E_SSA_DOMINANCE).
             for (Stmt s : statements) s.getDef().ifPresent(v -> {
-                if (definitions.get(v) == 1 && !values.containsKey(v)) values.put(v, ssa(localType(v)));
+                if (v instanceof Local && definitions.get(v) == 1 && !values.containsKey(v)) values.put(v, ssa(localType(v)));
             });
             add(Cir.FunctionDef.newBuilder().setId(id).setSymbolId(id + "/symbol").addAllParameterValueIds(paramIds)
                 .addAllReturnTypeIds(returnTypes).setEntryBlockId(blocks.get(body.getStmtGraph().getStartingStmt())).build());
@@ -340,8 +357,21 @@ final class Extractor {
                 };
                 if (op.isEmpty()) return opaqueValue(v);
                 String left = value(binary.getOp1()), right = value(binary.getOp2());
-                boolean compare = Set.of("EQ", "NE", "LT", "LE", "GT", "GE").contains(op);
-                String result = ssa(type(compare ? "boolean" : v.getType().toString()));
+                // The CIR core only encodes arithmetic over BITVECTOR, ordering over
+                // BITVECTOR, and equality over matching non-float sorts. IEEE_FLOAT and
+                // OPAQUE operands (the documented float/opaque boundary) must stay opaque
+                // instead of emitting an instruction the core rejects (E_TYPE_MISMATCH).
+                boolean arithmetic = Set.of("ADD", "SUB", "MUL", "DIV", "REM", "BIT_AND", "BIT_OR", "XOR").contains(op);
+                boolean order = Set.of("LT", "LE", "GT", "GE").contains(op);
+                boolean equality = op.equals("EQ") || op.equals("NE");
+                String lhs = valueTypes.get(left), rhs = valueTypes.get(right);
+                boolean modeled = true;
+                if (arithmetic || order)
+                    modeled = isBitvector(lhs) && isBitvector(rhs);
+                else if (equality)
+                    modeled = !isFloat(lhs) && !isFloat(rhs) && lhs.equals(rhs);
+                if (!modeled) return opaqueValue(v);
+                String result = ssa(type((equality || order) ? "boolean" : v.getType().toString()));
                 var inst = instruction(op, false).setResultValueId(result).addOperandValueIds(left).addOperandValueIds(right);
                 if (Set.of("ADD", "SUB", "MUL", "DIV", "REM").contains(op))
                     inst.setPayload(Cir.OperationPayload.newBuilder().setBinary(Cir.BinarySemantics.newBuilder()

@@ -15,7 +15,17 @@ func (l *lowerer) typ(t types.Type) string {
 	if b, ok := t.(*types.Basic); ok && b.Info()&types.IsUntyped != 0 {
 		t = types.Default(t)
 	}
-	id := "go:" + types.TypeString(t, func(p *types.Package) string { return p.Path() })
+	var id string
+	if b, ok := t.(*types.Basic); ok {
+		// Canonicalize Go's byte/rune aliases (byte -> uint8, rune -> int32):
+		// go/types represents them as named basic kinds whose TypeString differs
+		// from the canonical singleton even though their representation is
+		// identical. Leaving them distinct would make comparisons like
+		// `path[i] != '/'` (uint8 vs byte) fail CIR type identity checks.
+		id = "go:" + types.Typ[b.Kind()].Name()
+	} else {
+		id = "go:" + types.TypeString(t, func(p *types.Package) string { return p.Path() })
+	}
 	if signature, ok := t.(*types.Signature); ok && signature.Recv() != nil {
 		// TypeString omits the receiver, but CIR calls pass it explicitly.
 		id += ":recv=" + types.TypeString(signature.Recv().Type(), func(p *types.Package) string { return p.Path() })

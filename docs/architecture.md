@@ -23,7 +23,7 @@ transactionnel → snapshot SQLite clôturé → services query → CLI JSON.
 Les inventaires source et IR sont conservés séparément avec leurs liens,
 polarités et cas d'activation. Aucun calcul de faisabilité n'est annoncé.
 
-La migration initiale est la copie exacte de §8.2 : **47 tables, 21 triggers**.
+La migration initiale est la copie exacte de §8.2 : **50 tables, 21 triggers**.
 La présence de tables d'analyse prépare des contrats ultérieurs sans constituer
 un moteur symbolique. L'intégrité inter-snapshot exige les 22 contrôles SQL,
 pas uniquement les clés étrangères.

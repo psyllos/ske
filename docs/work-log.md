@@ -1739,3 +1739,72 @@ changements sont des correctifs de maintenance (aucun changement de
 comportement des AC), couverts par les tests workspace et le harnais. Un
 `SKE_PROMOTE_DOC=1` n'est nécessaire que pour régénérer délibérément les docs
 suivies lors d'une future campagne.
+
+## Validation grandeur réelle — projets GitHub réels (Go, Java, Rust) + traçabilité doc↔tests
+
+Demande de psyllos : (1) rien de ce qui est affirmé par la documentation sans
+être prouvé par un test ; (2) tester sur des projets GitHub réels (Go, Java,
+Rust) en confrontant les analyses SKE à l'identification manuelle de la source.
+Le rapport complet est `docs/validation/realworld.md` ; le traçage documentaire
+est épinglé par `scripts/check-doc-claims.py` (10 AC PASS, 2 NOT_RUN réservés à
+la campagne longue).
+
+### Trois bugs réels corrigés (découverts par l'ingestion de projets réels)
+
+1. **Go — alias `byte`/`rune`** (`E_TYPE_MISMATCH` sur `go-homedir`).
+   `go/types` distingue `types.Byte` (Basic nommé) de `types.Uint8` ;
+   l'adaptateur émettait `go:byte` et `go:uint8` comme types distincts, et le
+   cœur exige l'égalité des ids d'opérandes pour EQ/NE. Fix : canonicaliser les
+   types Basic par `types.Typ[k].Name()` dans
+   `adapters/go/internal/lower/types.go` (`byte`→`uint8`, `rune`→`int32`) + test
+   `TestByteRuneAliasTypeIdentity`. Ingestion go-homedir désormais CLOSED/COMPLETE.
+2. **Java — SSA orphelin sur stockages de tableaux** (`E_SSA_DOMINANCE` sur
+   `Inverse.main`). Le pré-traitement réservait un slot SSA pour les lhs
+   non-Local (`$a[i]=v`) que la descente n'attribue jamais. Fix : ne réserver
+   que pour des lhs `Local` dans `Extractor.java`.
+3. **Java — arithmétique IEEE_FLOAT illégale** (`E_TYPE_MISMATCH` sur
+   `Operation$1.apply`). L'adaptateur émettait ADD/MUL sur `double` ; le cœur ne
+   modélise que BITVECTOR. Fix : rendre opaques arithmétique/ordre IEEE_FLOAT et
+   égalités de sortes distinctes + test
+   `array_store_and_float_arithmetic_are_valid_or_opaque`.
+
+### Confrontations (commandes réellement exécutées)
+
+- Go (go-homedir) : ingestion CLOSED/COMPLETE, branches analyse sur
+  Expand/Dir/dirWindows, rules list, behaviors reconstruct (8 cas) — gardes
+  `<expr:N>` attendues (chaînes opaques).
+- Java (effective-java item34) : ingestion CLOSED/PARTIAL (0 erreur, 699
+  WARNING documentés), analyse de `Inverse.inverse` (SWITCH 5 cas POSSIBLE),
+  `overtimePay` WEEKDAY (1 branche) / WEEKEND (0 branche).
+- Rust : bubble-shell rejeté proprement (macros → RUST_SOURCE_UNSUPPORTED) ;
+  minipratt `binding_power` rejeté (const char non modélisée) ; fonctions
+  entières (classify/bound) analysées, structure de branches conforme.
+
+### Traçabilité doc↔tests
+
+Nouveau `scripts/check-doc-claims.py` : chaque affirmation testable de la doc
+est épinglée à une commande/`cargo test` ; échec si la preuve manque. État :
+10 PASS, 0 FAIL, 2 NOT_RUN (`milestone-ac-counts` et `verify-chain` nécessitent
+la campagne longue). Corrections documentaires appliquées pour rétablir la
+parité doc↔tests :
+
+- `docs/architecture.md` : « 47 tables » → **50 tables** (46+3 de
+  `0002_capabilities.sql` + `schema_migrations`).
+- `docs/sql-schema.md` : même correction (comptage installé exact).
+- `docs/adr/ADR-004.md` : même correction (50 tables, 21 triggers).
+- `docs/soundness-and-limits.md` : « Rust/Java v0.6 et API/MCP/LLM v0.7 restent
+  hors livraison » → leurs sections respectives (v0.6/v0.7 sont validées).
+
+### Diagnostics améliorés (bonus)
+
+`crates/ske-ingest/src/validate.rs` : les erreurs `E_TYPE_MISMATCH`/`E_SSA_*`
+portent désormais le contexte du record fautif (`[TypeDef <id>]`, `[instr
+fn=<fn> <id>/<op>]`) au lieu du seul « CIR local contract violation » — c'est
+ce qui a permis de localiser les trois bugs ci-dessus sans deviner.
+
+### État de l'arbre
+
+Worktree non commité / non poussé (aucun push ni merge partagé sans
+instruction explicite). `target/realworld/` contient les clones des projets
+réels (git-ignoré) et les bases `.sqlite` des campagnes ; refaites par
+`scripts/check-doc-claims.py` ou manuellement.
