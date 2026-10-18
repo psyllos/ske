@@ -221,6 +221,68 @@ func G(rs []rune) bool {
 		}
 	}
 }
+
+// TestSignatureTypeNamesDoNotLeak guards the signature canonicalization in
+// signatureID(). Real code passes a closure to a method taking a func()-typed
+// parameter (godotenv.expandEscapes does `re.ReplaceAllStringFunc(s, func(match
+// string) string {...})`): go/types renders the interface-style parameter
+// `func(string) string` and the closure `func(match string) string` with
+// different TypeString spellings. Without canonical signature ids the adapter
+// emits distinct type records for equal function types and the CIR core rejects
+// the CALL (E_TYPE_MISMATCH: parameter ids differ).
+func TestSignatureTypeNamesDoNotLeak(t *testing.T) {
+	p, fs := sourceSSA(t, `package p
+type R struct{}
+func (r *R) ReplaceAllStringFunc(src string, repl func(string) string) string { return src }
+func expandEscapes(str string, re *R) string {
+	out := re.ReplaceAllStringFunc(str, func(match string) string {
+		return match
+	})
+	return out
+}`)
+	r := Lower(p, fs, "/project", types.SizesFor("gc", "amd64"))
+	typesByID := map[string]*cir.TypeDef{}
+	values := map[string]*cir.ValueDef{}
+	for _, rec := range r.Records {
+		if d := rec.GetTypeDef(); d != nil {
+			typesByID[d.Id] = d
+		}
+		if d := rec.GetValueDef(); d != nil {
+			values[d.Id] = d
+		}
+	}
+	// No signature id may embed a parameter name (e.g. `func(match string) string`).
+	for id := range typesByID {
+		if id == "go:byte" || id == "go:rune" {
+			t.Fatalf("alias basic type survived canonicalization: %s", id)
+		}
+	}
+	// The CALL to ReplaceAllStringFunc must have operands whose types match the
+	// callee signature's parameter types exactly (the closure type must equal the
+	// interface-form param type). This is the invariant the real godotenv input
+	// violated before signatureID existed.
+	for _, rec := range r.Records {
+		i := rec.GetInstructionDef()
+		if i == nil || i.Opcode != "CALL" {
+			continue
+		}
+		if !strings.Contains(i.Id, "expandEscapes") {
+			continue
+		}
+		callee := values[i.OperandValueIds[0]]
+		calleeType := typesByID[callee.TypeId]
+		if calleeType.Kind != "FUNCTION" {
+			t.Fatalf("CALL callee not FUNCTION: %v", callee)
+		}
+		for n, param := range calleeType.ParamTypeIds {
+			arg := values[i.OperandValueIds[1+n]]
+			if arg.TypeId != param {
+				t.Fatalf("CALL param %d mismatch: arg %s (type %s) != signature %s", n, arg.Id, arg.TypeId, param)
+			}
+		}
+	}
+}
+
 func TestRealSSA(t *testing.T) {
 	p, fs := sourceSSA(t, `package p
 func helper(x int) int { return x+1 }

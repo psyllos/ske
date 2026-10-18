@@ -81,6 +81,12 @@ CLAIMS = [
         "check": "(cd adapters/go && go test ./internal/lower/ -run TestByteRuneAliasTypeIdentity -count=1)",
     },
     {
+        "id": "go-signature-canonical",
+        "docs": ["docs/validation/realworld.md"],
+        "assertion": "L'adaptateur Go canonicalise les signatures sans noms de paramètres (CALL fermé/closures réels valides).",
+        "check": "(cd adapters/go && go test ./internal/lower/ -run TestSignatureTypeNamesDoNotLeak -count=1)",
+    },
+    {
         "id": "java-array-float-sound",
         "docs": ["docs/validation/realworld.md"],
         "assertion": "L'adaptateur Java ne crée pas de SSA orphelin (*a[i]=v) et rend l'arithmétique IEEE_FLOAT opaque.",

@@ -107,3 +107,45 @@ explicite (fail-closed), conforme au contrat.
 - `adapters/java/src/test/java/org/ske/javaadapter/AdapterTest.java::
   array_store_and_float_arithmetic_are_valid_or_opaque`
 - Ces deux tests sont épinglés par `scripts/check-doc-claims.py`.
+
+## Lot 2 — autres projets GitHub au hasard
+
+### joho/godotenv (Go, ~10.7k⭐) — bug corrigé : noms de paramètres dans les signatures
+
+`git clone --depth 1` de github.com/joho/godotenv (stdlib-only, go.mod présent).
+
+**Bug réel corrigé** : l'ingestion échouait sur
+`github.com/joho/godotenv.expandEscapes/b0/i1/CALL` avec
+`E_TYPE_MISMATCH: [instr .../CALL]`. Cause : `expandEscapes` appelle
+`re.ReplaceAllStringFunc(str, func(match string) string {...})` — l'adaptateur
+émettait un id de type `go:func(match string) string` pour la closure et
+`go:func(string) string` pour le paramètre (interface) du même type de
+fonction, car `go/types.TypeString` fait fuiter les noms de paramètres.
+La vérification CIR des paramètres d'appel exige l'égalité → rejet.
+
+Correction (`adapters/go/internal/lower/types.go`) : nouvel
+`signatureID()` qui construit l'id d'une `*types.Signature` à partir des seuls
+types (receiver/paramètres/résultats) récursivement, sans aucun nom. Test de
+régression `TestSignatureTypeNamesDoNotLeak` qui reproduit le motif godotenv et
+échoue sans le correctif (vérifié par inversion temporaire).
+
+Résultat : godotenv ingère `CLOSED/PARTIAL` (0 erreur), autoload/cmd COMPLETE.
+Confrontation : `filenamesOrDefault` 1 décision/2 issues (source : 1 `if`) ✓ ;
+`getStatementStart` 3 décisions/6 issues ✓ ; `isSpace` 1 décision source
+(SWITCH) → 7 décisions IR (les 7 constantes `\t\v\f\r\n espace 0x85 0xA0`
+abaissées en comparaisons) ✓ ; `locateKeyName` 12 décisions/24 issues ✓.
+
+### spf13/cast (Go, ~2.6k⭐)
+
+`git clone --depth 1`. Ingestion `CLOSED/PARTIAL` (0 erreur), 100 fonctions,
+unités main PARTIAL + internal COMPLETE. `ToBoolE` (type-switch ~20 cas)
+analyse : 19 décisions IR / 38 issues, tous POSSIBLE — cohérent avec le
+type-switch abaissé. Le `switch i.(type)` source n'est pas attesté en source
+(mapping partiel documenté pour les asserts de type).
+
+### patrickmn/go-cache (Go, ~8.8k⭐) — limite réelle de l'adaptateur
+
+Projet **sans `go.mod`** (ère pré-modules) : `packages.Load` échoue avec
+`pattern ./...: directory prefix . does not contain main module`. L'adaptateur
+Go nécessite un module Go (go.mod). Comportement honnête (échec clair, pas
+d'analyse incorrecte), à documenter comme frontière : pas de support GO111MODULE=off.

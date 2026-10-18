@@ -1808,3 +1808,35 @@ Worktree non commité / non poussé (aucun push ni merge partagé sans
 instruction explicite). `target/realworld/` contient les clones des projets
 réels (git-ignoré) et les bases `.sqlite` des campagnes ; refaites par
 `scripts/check-doc-claims.py` ou manuellement.
+
+## Lot 2 — autres projets GitHub au hasard (post-landing a3a6af8)
+
+Après `/land`, poursuite de la campagne grandeur réelle sur d'autres projets
+réels. Rapport complété : `docs/validation/realworld.md` (section « Lot 2 »).
+
+### 4ᵉ bug réel corrigé — Go : noms de paramètres dans les signatures
+
+`joho/godotenv` (réel, ~10.7k⭐) échouait à l'ingestion :
+`E_TYPE_MISMATCH [instr github.com/joho/godotenv.expandEscapes/b0/i1/CALL]`.
+`expandEscapes` appelle `re.ReplaceAllStringFunc(str, func(match string) string
+{...})` ; `go/types.TypeString` rend `func(match string) string` pour la
+closure et `func(string) string` pour le paramètre de signature du même type de
+fonction, produisant deux ids distincts → écart de types de paramètres CALL.
+Fix : `signatureID()` birth une id canonique depuis les seuls types
+(receiver/params/résultats), sans noms ; test `TestSignatureTypeNamesDoNotLeak`
+(échoue sans le fix, vérifié). godotenv ingère désormais CLOSED/PARTIAL ;
+confrontations (filenamesOrDefault, getStatementStart, isSpace, locateKeyName)
+toutes conformes.
+
+### Autres projets testés (lot 2)
+
+- `spf13/cast` : ingestion CLOSED/PARTIAL (0 erreur), 100 fonctions ;
+  `ToBoolE` type-switch ~20 cas → 19 décisions IR (tous POSSIBLE), mapping
+  source partiel (sans attestation type-switch).
+- `patrickmn/go-cache` : **limite réelle** — projet sans `go.mod` (pré-modules),
+  l'adaptateur Go exige un module (échec propre `./...: directory prefix . does
+  not contain main module`). Frontière documentée : pas de GO111MODULE=off.
+
+Preuves : `go test ./...` adaptateur Go vert (9 paquets), `verify.sh`
+`VERIFY OK v0.7` rejoué avec le fix signature. Travail non commité / non poussé
+(la demande `/land` ne portait que sur le lot 1, déjà livré en `a3a6af8`).

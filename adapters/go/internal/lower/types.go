@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"go/types"
 	"strconv"
+	"strings"
 
 	cir "ske/adapters/go/gen/cir/v1"
 )
@@ -23,12 +24,19 @@ func (l *lowerer) typ(t types.Type) string {
 		// identical. Leaving them distinct would make comparisons like
 		// `path[i] != '/'` (uint8 vs byte) fail CIR type identity checks.
 		id = "go:" + types.Typ[b.Kind()].Name()
+	} else if sig, ok := t.(*types.Signature); ok {
+		// Canonicalize signatures without parameter/result names: function
+		// types are equal by types only, but TypeString leaks parameter names,
+		// so `func(string) string` (an interface-style signature) and
+		// `func(match string) string` (a closure) would get distinct type ids
+		// and fail CIR CALL parameter matching (E_TYPE_MISMATCH).
+		id = l.signatureID(sig)
 	} else {
 		id = "go:" + types.TypeString(t, func(p *types.Package) string { return p.Path() })
 	}
-	if signature, ok := t.(*types.Signature); ok && signature.Recv() != nil {
-		// TypeString omits the receiver, but CIR calls pass it explicitly.
-		id += ":recv=" + types.TypeString(signature.Recv().Type(), func(p *types.Package) string { return p.Path() })
+	if signature, ok := t.(*types.Signature); ok && signature.Recv() == nil {
+		// Non-method signatures carry no receiver; nothing to append.
+		_ = signature
 	}
 	if b, ok := t.(*types.Basic); ok && (b.Kind() == types.Int || b.Kind() == types.Uint || b.Kind() == types.Uintptr) {
 		arch := l.arch
@@ -102,6 +110,39 @@ func (l *lowerer) typ(t types.Type) string {
 		d.CanonicalDescriptor = "go:" + types.TypeString(t.Underlying(), func(p *types.Package) string { return p.Path() })
 	}
 	return id
+}
+
+// signatureID builds a canonical type id for a *types.Signature from its
+// receiver/parameter/result types only, never from TypeString (which would leak
+// parameter names and make equal function types unequal, e.g. the interface
+// parameter `func(string) string` vs the closure `func(match string) string`).
+func (l *lowerer) signatureID(sig *types.Signature) string {
+	var b strings.Builder
+	b.WriteString("go:func")
+	if sig.Recv() != nil {
+		b.WriteString(":recv=" + l.typ(sig.Recv().Type()))
+	}
+	b.WriteString("(")
+	for i := 0; i < sig.Params().Len(); i++ {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString(l.typ(sig.Params().At(i).Type()))
+	}
+	b.WriteString(")")
+	if sig.Results().Len() == 1 {
+		b.WriteString(" " + l.typ(sig.Results().At(0).Type()))
+	} else if sig.Results().Len() > 1 {
+		b.WriteString(" (")
+		for i := 0; i < sig.Results().Len(); i++ {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			b.WriteString(l.typ(sig.Results().At(i).Type()))
+		}
+		b.WriteString(")")
+	}
+	return b.String()
 }
 
 func (l *lowerer) typeRecord(d *cir.TypeDef) string { l.types[d.Id] = d; return d.Id }
