@@ -14,6 +14,8 @@ ske-graph = { path = "crates/ske-graph" }
 ske-storage = { path = "crates/ske-storage" }
 ske-ingest = { path = "crates/ske-ingest" }
 ske-query = { path = "crates/ske-query" }
+ske-api = { path = "crates/ske-api" }
+ske-mcp = { path = "crates/ske-mcp" }
 prost = "=0.14.4"
 prost-build = "=0.14.4"
 protoc-bin-vendored = "=3.3.0"
