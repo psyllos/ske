@@ -799,7 +799,7 @@ pub fn list_rules(
     let rules = rows(
         db,
         "SELECT id,rule_key,COALESCE(short_name,'') AS short_name,description,
-                origin,validation_status,behavior_case_id
+                origin,validation_status,behavior_case_id,prompt_version,llm_model,model_parameters
          FROM functional_rules WHERE snapshot_id=?1 ORDER BY rule_key",
         [snapshot],
     )?;
@@ -815,6 +815,11 @@ pub fn list_rules(
         let mut item = rule.clone();
         item.as_object_mut().unwrap().remove("id");
         item.as_object_mut().unwrap().remove("behavior_case_id");
+        if item.get("prompt_version").and_then(Value::as_str).is_none() {
+            item.as_object_mut().unwrap().remove("prompt_version");
+            item.as_object_mut().unwrap().remove("llm_model");
+            item.as_object_mut().unwrap().remove("model_parameters");
+        }
         if with_evidence {
             let evidence = rows(
                 db,
@@ -999,4 +1004,92 @@ fn resolve_snapshot(db: &Connection, repo: i64, selector: &str) -> Result<i64> {
         |r| r.get(0),
     )
     .map_err(sql)
+}
+
+/// One LLM-inferred rule to persist (AC-0.7-08). Provenance fields travel with
+/// the row; the deterministic rules are never modified.
+pub struct LlmRuleInsert {
+    pub rule_key: String,
+    pub short_name: String,
+    pub description: String,
+    pub evidence_refs: Vec<String>,
+    pub llm_model: String,
+    pub model_parameters: String,
+}
+
+/// Persist LLM-inferred rules (§7.4, AC-0.7-08) with explicit provenance:
+/// `origin='LLM_INFERRED'`, `validation_status='UNVALIDATED'`, `prompt_version`,
+/// `llm_model`, `model_parameters`. Rules are inserted without a deterministic
+/// behavior case (they are not derivations), and a `LLM_INFERRED` row is never
+/// referenceable as a proof (`prop_no_llm_proof`). The caller's `prompt_version`
+/// is recorded verbatim so re-runs are auditable. Deterministic rows are
+/// untouched (the INSERT targets only fresh rule keys; a duplicate key is an
+/// error, never an overwrite).
+pub fn insert_llm_rules(
+    db: &Connection,
+    snapshot: i64,
+    rules: &[LlmRuleInsert],
+    prompt_version: &str,
+) -> Result<Value> {
+    let tx = db.unchecked_transaction().map_err(sql)?;
+    let db: &Connection = &tx;
+    let mut inserted = Vec::new();
+    for rule in rules {
+        // References are deterministic rule keys from this exact snapshot,
+        // never model-created proof ids or keys from another snapshot.
+        if rule.evidence_refs.is_empty() {
+            return Err(Error::new(
+                "E_USAGE",
+                "LLM rule requires deterministic evidence",
+            ));
+        }
+        let mut evidence_rules = Vec::new();
+        for key in &rule.evidence_refs {
+            let id: Option<i64> = db.query_row(
+                "SELECT id FROM functional_rules WHERE snapshot_id=?1 AND rule_key=?2
+                 AND origin != 'LLM_INFERRED'
+                 AND EXISTS(SELECT 1 FROM knowledge_evidence WHERE functional_rule_id=functional_rules.id)",
+                params![snapshot, key], |r| r.get(0),
+            ).optional().map_err(sql)?;
+            evidence_rules.push(id.ok_or_else(|| {
+                Error::new("E_USAGE", "invalid deterministic evidence reference")
+            })?);
+        }
+        db.execute(
+            "INSERT INTO functional_rules(
+                snapshot_id,behavior_case_id,rule_key,short_name,description,
+                origin,validation_status,prompt_version,llm_model,model_parameters)
+             VALUES(?1,NULL,?2,?3,?4,'LLM_INFERRED','UNVALIDATED',?5,?6,?7)",
+            params![
+                snapshot,
+                rule.rule_key,
+                rule.short_name,
+                rule.description,
+                prompt_version,
+                rule.llm_model,
+                rule.model_parameters
+            ],
+        )
+        .map_err(sql)?;
+        let rule_id = db.last_insert_rowid();
+        for source_rule in evidence_rules {
+            db.execute(
+                "INSERT INTO knowledge_evidence(functional_rule_id,source_span_id,instruction_id,ir_outcome_id,summary_case_id,relation)
+                 SELECT ?1,source_span_id,instruction_id,ir_outcome_id,summary_case_id,relation
+                 FROM knowledge_evidence WHERE functional_rule_id=?2",
+                params![rule_id, source_rule],
+            ).map_err(sql)?;
+        }
+        inserted.push(json!({
+            "rule_key": rule.rule_key,
+            "origin": "LLM_INFERRED",
+            "validation_status": "UNVALIDATED",
+            "prompt_version": prompt_version,
+            "llm_model": rule.llm_model,
+            "model_parameters": rule.model_parameters,
+            "evidence_refs": rule.evidence_refs,
+        }));
+    }
+    tx.commit().map_err(sql)?;
+    Ok(json!({"snapshot_id": snapshot, "inserted": inserted, "count": inserted.len()}))
 }

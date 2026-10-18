@@ -1,9 +1,10 @@
 //! SQLite-independent JSON DTO façade. Only this layer, never the CLI, queries SQL.
+pub use behavior::LlmRuleInsert;
 use rusqlite::{params, types::ValueRef, Connection, Params};
 use serde_json::{json, Value};
 use ske_common::{Error, Result};
 pub use ske_ingest::{adapter::RunLimits, profile, GoOptions, IngestOptions, Language};
-use ske_storage::Storage;
+pub use ske_storage::Storage;
 use std::path::{Path, PathBuf};
 
 mod analysis;
@@ -12,6 +13,9 @@ mod analysis_load;
 mod analysis_read;
 mod behavior;
 mod callgraph;
+pub mod dto;
+mod knowledge;
+mod knowledge_services;
 mod summaries;
 #[cfg(test)]
 mod summary_tests;
@@ -474,5 +478,41 @@ impl Query {
     /// in snapshot B of the same repository (v0.5, §13).
     pub fn rules_stale_check(&self, repository: &str, from: &str, to: &str) -> Result<Value> {
         behavior::stale_check(self.db(), repository, from, to)
+    }
+    /// `explain` a source outcome (v0.7, AC-0.7-04): status, run assumptions,
+    /// arrivals with SMT-LIB text and verifier verdict, without reading source.
+    pub fn explain(
+        &self,
+        snapshot: &str,
+        repository: Option<&str>,
+        outcome: &str,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Value> {
+        let sid = self.snapshot(snapshot, repository)?;
+        knowledge::explain(self.db(), sid, outcome, limit, offset)
+    }
+    /// `impact` of a modified function (v0.7, AC-0.7-05): conservative reverse
+    /// callers, `incomplete:true` when the call graph could not be closed.
+    pub fn impact(
+        &self,
+        snapshot: &str,
+        repository: Option<&str>,
+        function: &str,
+    ) -> Result<Value> {
+        let sid = self.snapshot(snapshot, repository)?;
+        knowledge::impact(self.db(), sid, function)
+    }
+    /// Persist LLM-inferred rules into the snapshot with provenance fields
+    /// (v0.7, AC-0.7-08). Deterministic rules are never modified.
+    pub fn insert_llm_rules(
+        &self,
+        snapshot: &str,
+        repository: Option<&str>,
+        rules: &[behavior::LlmRuleInsert],
+        prompt_version: &str,
+    ) -> Result<Value> {
+        let sid = self.snapshot(snapshot, repository)?;
+        behavior::insert_llm_rules(self.db(), sid, rules, prompt_version)
     }
 }
