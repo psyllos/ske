@@ -224,7 +224,13 @@ def main():
     report += "| AC | Status | Command | Error |\n|---|---|---|---|\n"
     for r in results:
         report += f"| {r['ac']} | {r['status']} | `{r.get('command', '')}` | {r.get('error', '').replace(chr(10), ' ')} |\n"
-    (ROOT / "docs/validation/v0.3.md").write_text(report)
+    # Artefacts are always written under target/; the tracked report advances
+    # only on explicit promotion. A campaign (including the nested regression
+    # chain) never clobbers a hand-maintained "validée" framing: run with
+    # SKE_PROMOTE_DOC=1 to update docs/validation/v0.3.md deliberately.
+    (out / "report.md").write_text(report)
+    if os.environ.get("SKE_PROMOTE_DOC") == "1":
+        (ROOT / "docs/validation/v0.3.md").write_text(report)
     raise SystemExit(any(r["status"] != "PASS" for r in results))
 
 

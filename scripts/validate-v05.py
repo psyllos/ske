@@ -154,7 +154,14 @@ def main():
     rows += ["", "Les commandes ciblent le CLI réel / la façade Query avec l'adaptateur Go de confiance.",
              "Un test exécuté ne dispense pas de vérifier l'intégralité de son AC.",
              "Voir `docs/work-log.md` et `docs/soundness-and-limits.md` pour les limites ouvertes."]
-    (ROOT / "docs/validation/v0.5.md").write_text("\n".join(rows) + "\n")
+    report = "\n".join(rows) + "\n"
+    # Artefacts are always written under target/; the tracked report advances
+    # only on explicit promotion. A campaign (including the nested regression
+    # chain) never clobbers a hand-maintained "validée" framing: run with
+    # SKE_PROMOTE_DOC=1 to update docs/validation/v0.5.md deliberately.
+    (OUT / "report.md").write_text(report)
+    if os.environ.get("SKE_PROMOTE_DOC") == "1":
+        (ROOT / "docs/validation/v0.5.md").write_text(report)
     raise SystemExit(any(r["status"] != "PASS" for r in results))
 
 

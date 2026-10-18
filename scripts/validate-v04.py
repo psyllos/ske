@@ -118,7 +118,14 @@ def main():
     rows += ["", "AC-0.4-02 exécute aussi les trois commandes CLI exactes ;",
              "AC-0.4-12 invoque le vrai `ske db check` après persistance des résumés.",
              "Voir `docs/soundness-and-limits.md` pour les frontières de précision."]
-    (ROOT / "docs/validation/v0.4.md").write_text("\n".join(rows) + "\n")
+    report = "\n".join(rows) + "\n"
+    # Artefacts are always written under target/; the tracked report advances
+    # only on explicit promotion. A campaign (including the nested regression
+    # chain) never clobbers a hand-maintained "validée" framing: run with
+    # SKE_PROMOTE_DOC=1 to update docs/validation/v0.4.md deliberately.
+    (OUT / "report.md").write_text(report)
+    if os.environ.get("SKE_PROMOTE_DOC") == "1":
+        (ROOT / "docs/validation/v0.4.md").write_text(report)
     raise SystemExit(any(r["status"] != "PASS" for r in results))
 
 

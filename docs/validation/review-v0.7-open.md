@@ -38,6 +38,12 @@ Pas de campagne longue exécutée par le reviewer.
 - Confidentialité : snippets embarqués et requêtes mutées contrôlés avant envoi.
 - Harnais : lacunes de couverture restent PARTIAL, pas PASS au seul succès
   du filtre. Le chaînage AC-11 passe par v0.6.
+- Promotion documentaire séparée (point 8) : les validateurs v0.3–v0.5
+  écrivent leur rapport sous `target/validation-v0X/report.md` et ne
+  modifient plus `docs/validation/v0.X.md` qu'avec `SKE_PROMOTE_DOC=1`.
+  Une campagne (y compris la chaîne de non-régression) ne peut plus écraser
+  l'encadrement « validée » maintenu à la main. La vérification exacte des
+  identifiants AC des artefacts prédécesseurs reste ouverte.
 
 Validation ciblée exécutée :
 `cargo test -p ske-api --lib -- --test-threads=1` (10 tests),
