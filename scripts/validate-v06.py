@@ -3,6 +3,7 @@
 import argparse
 import importlib.util
 import json
+import os
 from pathlib import Path
 import re
 import sys
@@ -14,7 +15,7 @@ runner = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(runner)
 # Reuse logging, heartbeat and process-group cancellation, not inherited proof.
 runner.ENV.pop("SKE_INHERIT_VERIFY", None)
-runner.ENV["SKE_EXPECT_VERIFY_VERSION"] = "v0.6"
+runner.ENV["SKE_EXPECT_VERIFY_VERSION"] = os.environ.get("SKE_EXPECT_VERIFY_VERSION", "v0.6")
 execute = runner.execute
 
 FILTERS = {
@@ -114,7 +115,9 @@ def main(argv=None):
                 if n in FILTERS:
                     require_tests(text, FILTERS[n][index])
                 if n == 12 and index == 0:
-                    assert text.rstrip().endswith("VERIFY OK v0.6"), "missing final VERIFY OK v0.6"
+                    expected = os.environ.get("SKE_EXPECT_VERIFY_VERSION", "v0.6")
+                    assert text.rstrip().endswith(f"VERIFY OK {expected}"), \
+                        f"missing final VERIFY OK {expected}: {text[-200:]}"
                 if n == 13 and index == 0:
                     require_tests(text, "cir_compat_")
                 if n == 13 and index == 1:

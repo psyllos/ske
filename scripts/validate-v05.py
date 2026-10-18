@@ -139,8 +139,8 @@ def main():
             assert len(data) == expected and all(r["status"] == "PASS" for r in data), version
 
     expected_version = os.environ.get("SKE_EXPECT_VERIFY_VERSION", "v0.5")
-    if not re.fullmatch(r"v0\.[1-6]", expected_version):
-        parser.error("SKE_EXPECT_VERIFY_VERSION must name v0.1 through v0.6")
+    if not re.fullmatch(r"v0\.[1-7]", expected_version):
+        parser.error("SKE_EXPECT_VERIFY_VERSION must name v0.1 through v0.7")
     check(12, f"./scripts/verify.sh && SKE_INHERIT_VERIFY=1 SKE_EXPECT_VERIFY_VERSION={expected_version} python3 scripts/validate-v04.py",
           validator=regression)
     invocation = "python3 scripts/validate-v05.py" + (f" --only {args.only}" if args.only else "")

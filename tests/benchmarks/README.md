@@ -40,3 +40,25 @@ Le parent conserve les preuves dans son rapport de validation.
 
 Les benchmarks SMT, adaptateur Go et comportements sont prévus, non implémentés.
 Ne pas les commencer avant validation des jalons précédents, dont les 42 AC v0.1.
+
+## v0.7 — protocole §17 (AC-0.7-10)
+
+`scripts/ske-bench.py` exécute le protocole §17 sur `$LAB` et consigne :
+coût d'indexation, coût par requête, qualité et rappel, avec et sans
+représentation structurée. Composants : SMT (§6.4), adaptateur Go (§9),
+comportements/règles (v0.5).
+
+```sh
+python3 scripts/ske-bench.py --check
+```
+
+Exige au préalable `cargo build -p ske-cli` (binaire `target/debug/ske`) et le
+build de l'adaptateur Go de confiance (le script l'exécute sinon) ; `go` et
+`cargo` doivent être disponibles. Rapports JSON (reproductibles) dans
+`target/bench-v07/bench-report.json` (env, LOC $LAB, durées, pic RSS
+indexation via `/usr/bin/time`, taille de la base, diagnostics, distribution
+des statuts d'issures, rappel classé, qualité des preuves).
+
+Mesures consignées le jour de validation : voir `docs/validation/v0.7.md`.
+Aucune valeur n'est échantillonnée depuis un autre run : chaque chiffre vient
+d'une commande exécutée par cette campagne.

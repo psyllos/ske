@@ -72,4 +72,7 @@ PY
 # inside `cargo test --workspace` above and build + exercise the isolated Rust
 # and Java adapters against the unchanged core. The final marker declares the
 # validated milestone; the v0.6 harness relies on it via SKE_EXPECT_VERIFY_VERSION.
-printf 'VERIFY OK v0.6\n'
+# v0.7: API/MCP/LLM crates (ske-api, ske-mcp) build and their unit tests run
+# inside `cargo test --workspace`; the MCP tools, DTO pagination and Context
+# Builder are exercised in-process and via the standalone ske-mcp-server.
+printf 'VERIFY OK v0.7\n'
