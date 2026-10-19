@@ -100,6 +100,13 @@ CLAIMS = [
         "expect_test": "rust_loops_and_arithmetic_representable",
     },
     {
+        "id": "rust-div-rem-assert-branch",
+        "docs": ["docs/validation/realworld.md"],
+        "assertion": "L'adaptateur Rust abaisse les asserts MIR de `/` et `%` (division par zéro, MIN/-1) en BRANCH réels vers un bloc PANIC par fonction : plus de MIR_UNSUPPORTED, panique modélisée, non-régression boucle.",
+        "check": "(cd adapters/rust && cargo test --test adapter rust_division_and_remainder_representable -- --exact)",
+        "expect_test": "rust_division_and_remainder_representable",
+    },
+    {
         "id": "java-array-float-sound",
         "docs": ["docs/validation/realworld.md"],
         "assertion": "L'adaptateur Java ne crée pas de SSA orphelin (*a[i]=v) et rend l'arithmétique IEEE_FLOAT opaque.",

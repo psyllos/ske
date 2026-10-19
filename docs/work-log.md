@@ -1895,9 +1895,10 @@ Test de régression `rust_loops_and_arithmetic_representable`
 `MIR_UNSUPPORTED`, arithmétique conservée en OPAQUE_OP, back-edge de boucle
 présent.
 
-**Frontière restante (documentée, fail-closed)** : `/` et `%` (division par
-zéro) émettent toujours un assert MIR même avec `-Coverflow-checks=off` (ce
-sont de vraies panics Rust) → `MIR_UNSUPPORTED`. Le `1<<bit` de
+**Frontière levée ensuite (réf. `rust_division_and_remainder_representable`)** : `/` et `%` (division par zéro, MIN/-1) émettent des asserts MIR de vraies
+panics Rust même avec `-Coverflow-checks=off` ; ils sont désormais abaissés
+comme des BRANCH réels vers un bloc PANIC par fonction (voir la section
+« Div/REM » du journal). Le `1<<bit` de
 `ByteSet::contains` (regex-lite) qui plantait avant rentre désormais.
 
 ### Go — report go-a et bug `any`/`interface{}` réel, corrigé
@@ -1952,5 +1953,222 @@ passe après). `mvn verify` vert (13 tests AdapterTest + Item34DumpTest) ;
 
 **Bilan Lot 3** : 6/6 rapports scouts reçus ; 6 bugs adaptateurs réels
 corrigés (Go : byte/rune, signatures, `any` ; Java : garde BOOL, invoke
-booléen, élargissement char, retour sous-typé ; Rust : checks de débordement
+booléen, élargissement char, retour sous-typage ; Rust : checks de débordement
 MIR). Documents consolidés ; aucun push/merge (la demande l'interdit).
+
+## Re-vérification TDD du harnais de benchmark (points 3/4/6/7 de review-v0.7-open)
+
+Relecture et re-validation des quatre points de revue sur le benchmark
+`scripts/ske-bench.py` (ac-0.7-10, AC-0.7-10) : aucun défaut fonctionnel
+subsistant ; refactor non-comportemental + garde-fous de tests ajoutés.
+
+1. **Point 3 (fail-closed exit)** — déjà correct : `Campaign.run` lève
+   `ValueError` sur exit non nul ; `projection()` lève sur projetion
+   vide/TIMEOUT ; `main()` enregistre `report["error"]` et retourne
+   `0 si complete else 1`. Vérifié exit=1 réel (DB existante refusée),
+   et par tests unitaires (sous-processus réel `sh -c "exit 3"` ;
+   `main()` avec étape en échec ; `projection()` sur vraie DB de la
+   migration 0001 avec un résultat TIMEOUT injecté).
+2. **Point 4 (deux bras réels)** — déjà correct : `CORPUS` hand-authored
+   indépendant ; les deux bras (`without_structured` scan lexical,
+   `with_structured` requêtes SKE réelles) produisent réponses + coûts par
+   question + métriques non nulles. Vérifié en campagne réelle : les deux
+   bras donnent 10/10 TP, precision=recall=1.0, 4/4 EXACT.
+3. **Point 6 (unités RSS / RAM / déterminisme / intégrité)** — déjà correct :
+   `rss_bytes` multiplie les KiB Linux par 1024 (Darwin: octets inchangés) ;
+   `ram_bytes` sysctl hw.memsize (Darwin) / sysconf (Linux) en octets ;
+   déterminisme (2 répétitions identiques) et `db check` ok exigés
+   (fail-closed). Vérifié en campagne réelle (RSS octets, RAM octets,
+   determinism.equal=True, databases identiques).
+4. **Point 7 (binaire périmé)** — déjà correct : `Campaign.build`
+   reconstruit `cargo build --locked -p ske-cli` et `go build` à chaque
+   campagne, inconditionnellement (aucune condition d'existence).
+
+Refactor non-comportemental de `scripts/ske-bench.py` (synonyme exact) :
+`ram_bytes`, `require_determinism`, `require_integrity`, `Campaign.build`,
+`Campaign.measure_arms`. Nouveaux tests `scripts/test_bench_harness.py`
+(17 tests).
+
+Campagne réelle exécutée sur macOS arm64 :
+`python3 scripts/ske-bench.py --check --out target/bench-v07-verify-harness`
+exit 0, complete=True, 2 répétitions identiques, intégrité ok, RSS ingest
+= 203–210 Mo, RAM = 51 539 607 552 octets (48 GiB).
+
+Tests : `cd scripts && python3 -m unittest test_bench_harness` (17 OK) ;
+depuis la racine `python3 -m unittest discover -s scripts -p 'test_*.py'`
+(37 OK) et `-p 'test_validate_v0*.py'` (18 OK). Aucun commit ni push.
+
+## Div/REM Rust représentables — asserts MIR abaissés en BRANCH + PANIC (post-Lot 3)
+
+Demande TDD dédiée : rendre `/` et `%` représentables dans l'adaptateur Rust.
+Avant : le lowerer rejetait fail-closed (`MIR_UNSUPPORTED`) tout terminator
+`assert(...) -> [success: bbN, unwind continue]` (division par zéro et
+MIN/-1), donc une seule division tuait toute la fonction (ripgrep, regex,
+regex-lite).
+
+**Fix (adapters/rust/src/lower.rs)** : un assert runtime est abaissé en une
+BRANCH réelle sur le drapeau interne (`assert(!move _N)` → BRANCH sur `_N`) :
+- arête BRANCH_TRUE (drapeau vrai = condition de panique, `guard_negated=false`)
+  → bloc synthétique par fonction `<fn>/panic`, terminé par un opcode `PANIC`
+  (vraie panique Rust : division par zéro, ou `a == T::MIN && b == -1`) ;
+- arête BRANCH_FALSE (`guard_negated=true` = assertion tenue, ex. diviseur non
+  nul) → bloc success `bbN` ; le chemin normal porte donc `b != 0` via la garde.
+La polarité est celle du moteur (arête TRUE = drapeau vrai) : contrairement à
+l'énoncé initial du lot (« TRUE → success »), c'est FALSE qui est le chemin
+dénommé « succès » pour la forme `assert(!X)` canonique du MIR de div/rem ;
+la soundness exigée (« le chemin normal porte `diviseur != 0` ») la rend
+exacte. Les asserts ne sont PAS reliés aux décisions source (pas de
+`branch_edges`), et `drop(...)` reste fail-closed. `unwind continue` seul est
+accepté pour ces asserts ; les autres actions restent rejetées. Les blocs
+synthétiques partagent l'espace d'ordinal (PANIC puis unwind), évitant
+`E_ORDINAL_DUPLICATE`.
+
+Second correctif nécessaire (`e.constant`) : le check de débordement compare
+`_4 == const i32::MIN` (jeton sans suffixe `_i32`) ; `T::MIN`/`T::MAX` sont
+désormais matérialisés en deux-complément dans `constant()`.
+
+**Preuves** : RED d'abord — le nouveau test échouait sur
+`unsupported MIR assert/drop terminator in sum_mod: assert(!move _34, ...)`.
+GREEN : `rust_division_and_remainder_representable` (boucle + `i % 2` +
+`acc / d + acc % d`, assertions : pas de `MIR_UNSUPPORTED`, bloc `/panic`,
+terminator `PANIC`, arête `BRANCH_TRUE`→/panic `!guard_negated`, arêtes
+`BRANCH_FALSE` `guard_negated`, back-edge de boucle, et import autoritatif
+`ske_ingest::ingest_many` PARTIAL). Non-régression : `cd adapters/rust &&
+cargo test` 13/13 (dont `rust_golden_decisions`,
+`rust_loops_and_arithmetic_representable`, `rust_real_mir_cfg_and_import`).
+End-to-end réel (sonde jetable hors dépôt, non commise) : ingestion via
+`ske_query::Query` puis `analyze()` sur `div(a,b){a/b + a%b}` →
+`exploration_closed=true`, `cut_count=0` ; les 4 outcomes d'assert (TRUE→
+panic) sont `POSSIBLE` là où la panique est réelle, et le drapeau de dérivision
+par zéro du `%` est `PROVEN_UNREACHABLE (ALL_ARRIVALS_UNSAT)` parce que la
+garde `b != 0` du `/` le précède déjà (propagation de garde saine, non
+fabriquée). `cargo fmt --all -- --check` et `cargo clippy -p
+ske-adapter-rust --all-targets -- -D warnings` vrais. `cargo test -p ske-cir
+-p ske-ingest` vert.
+
+Limites honnêtes restantes : `drop(...)` et tout `assert` à `unwind` non
+`continue` restent fail-closed (destructeurs/landing pads non modélisés) ; les
+`Div`/`Rem` eux-mêmes restent OPAQUE_OP (le modèle compare, ne calcule pas
+l'arithmétique) ; l'inventaire des panics implicites hors div/rem reste
+PARTIAL. `cargo test -p ske-cli --test multilang` n'existe pas dans cet arbre
+(CLI state/trim) : seuls `ingest go`/`ingest cir` restent ; la validation
+autoritative équivalente (relational/dominance) est couverte par
+`ingest_many` dans le test d'adaptateur. (Note : l'affirmation initiale « multilang n'existe pas dans cet arbre » était une erreur du lane — le coordinateur a re-exécuté `cargo test -p ske-cli --test multilang` 12/12 PASS après fusion ; les lanes B et C l'ont aussi exécuté avec succès.) Aucun push ni commit (demande).
+
+## Support pré-module Go (GO111MODULE=off / GOPATH) — adaptateur Go
+
+Demande : supporter les projets Go sans `go.mod` (go-cache, way, pat,
+columnize), TDD strict, sans toucher le moteur Rust, les schémas, ni le mode
+module (qui doit rester byte-for-byte identique).
+
+### Décision : fallback GOPATH réel, déclenché par un flag de profil
+
+`gopath_import` (JSON de profil, optionnel) est à la fois le déclencheur et
+l'import path GOPATH déterministe. Règles :
+
+- racine avec `go.mod` propre → mode module inchangé (le flag est ignoré) ;
+- racine sans `go.mod` propre + flag → fallback GOPATH ;
+- racine sans `go.mod` propre + pas de flag + aucun `go.mod` ancêtre → erreur
+  explicite `PROJECT_MODULE_REQUIRED` (actionnable) ;
+- racine sans `go.mod` propre + pas de flag + `go.mod` ancêtre (sous-dossier
+  d'un module) → mode module inchangé.
+
+Mécanique du fallback : copie physique temporaire sous
+`$GOPATH/src/<import>` (un lien symbolique est résolu par `go` et traité hors
+GOPATH → chemin `_/abs` non déterministe), chargement `go list` seul en mode
+réduit (aucun typecheck des copies), réécriture des chemins vers la vraie
+racine, typecheck source unique sur les fichiers réels. Env verrouillé :
+`GO111MODULE=off`, `GOFLAGS=`, `GOPATH=<tmp>` + verrous habituels. `pkg.Module`
+est nil en mode GOPATH → empreinte sans métadonnée de module ; unités
+`go:<import>@<goos>/<goarch>`.
+
+Note honnêteté TDD : la fixture est sous `adapters/go/testdata/` (dans le
+module `ske/adapters/go`), donc le mode module de Go 1.27 ne « plante » pas sur
+elle comme sur les vrais projets hors module ; le RED authentique est « le code
+actuel charge la fixture avec l'import path du module ambiant
+(`ske/adapters/go/testdata/...`) au lieu de l'import path pré-module demandé ».
+Le cas réel hors-module (sans flag) est couvert par
+`TestPreModuleNoFlagIsExplicitFrontier`.
+
+### Commandes et résultats
+
+- RED : `go test ./internal/load -run TestPreModuleGOPATHFallback` → FAIL
+  (chemin d'import module ambiant, pas l'import path GOPATH demandé).
+- GREEN : `go test ./internal/load/ ./internal/profile/ ./internal/emit/` PASS ;
+  nouveau `TestExtractLegacyGOPATH` vérifie la chaîne complète
+  (sources/SSA/décisions/liens, chemins dans la racine, déterminisme).
+- Non-régression : `(cd adapters/go && gofmt -l . && go vet ./... && go test
+  ./...)` → tout PASS, 8 paquets.
+- Byte-for-byte module : extraction réelle de `go:example@linux/amd64` avia le
+  client de frame vs ancien binaire (`git stash`) → `cmp` identique (l'ajout de
+  `gopath_import` au struct exigeait `omitempty` pour ne pas changer
+  l'empreinte des projets module).
+- Rust : `cargo test -p ske-cli --test go_deterministic` (1 PASS),
+  `--test multilang` (12 PASS), `--test go_golden_decisions go_props
+  go_diagnostics go_build_tags go_counters go_activation_cases
+  go_implicit_exit_inventory go_vs_cir go_review` (11 PASS).
+
+### Limites
+
+- Copie complète de l'arbre (hors `.`/`_`, liens symboliques non suivis) :
+  coûteuse pour un très gros arbre sans module.
+- Pas de résolution de dépendances tierces (GOPROXY=off) : stdlib + paquets du
+  projet seulement, comme en GOPATH classique sans vendor.
+- Un futur `go` qui retirerait GO111MODULE=off ferait échouer le fallback avec
+  une erreur explicite.
+- La fixture reste sous `adapters/go/testdata/` ; le chargement module de cette
+  localisation précise échoue par ailleurs dans la sandbox de dev (re-exec `go`
+  refusé lors de la résolution des dépendances du module `ske/adapters/go`) ;
+  le fallback GOPATH l'évite par construction (aucune résolution de module).
+- Aucun push/merge ; aucun changement Rust/schéma/migration.
+
+Tests ajoutés : `TestPreModuleGOPATHFallback`, `TestPreModuleNoFlagIsExplicitFrontier`,
+`TestGopathEnvLocked`, `TestGopathFlagDoesNotOverrideOwnGoMod`,
+`TestExtractLegacyGOPATH`, cas de validation du profil `gopath_import`.
+
+## Intégration coordinateur — campagne de couverture des limitations (fusion des 4 lanes)
+
+Demande de psyllos : couvrir les limitations documentées (même à outils avancés),
+TDD, sous-agents autant que nécessaire. Inventaire consolidé : `docs/limitations-coverage.md`.
+
+### Lanes fusionnées (worktrees Delta, versions exactes capturées)
+
+| Lane | Livrable | Thread |
+|---|---|---|
+| A — Rust `/` `%` | assert MIR → BRANCH+PANIC, `T::MIN`/`MAX`, test `rust_division_and_remainder_representable` | `ksQQlRqmACkJR8q1AY16AnLYZ5LOAC5sL5IBxBDZiRjivQ9OQqTS_tRBC-14` |
+| B — Go pré-module | fallback GOPATH `gopath_import`, `PROJECT_MODULE_REQUIRED`, byte-for-byte module | `ksQQlRqmACkJR8q1AY16AnLYZ5LOAC5sOJIBxBDZiRjivQ9OQqTS_tRBC-14` |
+| C — Java | heap configurable + `--max-heap` + env allowlist ; fix `E_SSA_DOMINANCE` (dispatch SWITCH) | `ksQQlRqmACkJR8q1AY16AnLYZ5LOAC5sQpIBxBDZiRjivQ9OQqTS_tRBC-14` |
+| D — Harnais | re-vérif points 3/4/6/7, 17 tests `test_bench_harness.py` | `ksQQlRqmACkJR8q1AY16AnLYZ5LOAC5sSZIBxBDZiRjivQ9OQqTS_tRBC-14` |
+
+### Corrections du coordinateur après fusion
+
+1. **Marqueurs de conflit dans `docs/work-log.md`** : la fusion des trois sections
+   (harnais, Rust, Go) a laissé des marqueurs `<<<<<<< current` / `||||||| base` /
+   `>>>>>>> incoming`. Contenu intact (sections séquentielles non chevauchantes) ;
+   marqueurs retirés.
+2. **Formatage** : `crates/ske-ingest/src/adapter.rs` et `adapter_ipc.rs` (lane C)
+   n'étaient pas `cargo fmt`-propres après fusion → `cargo fmt --all` appliqué.
+3. **Erreur factuelle du lane A corrigée dans le journal** : « `--test multilang`
+   n'existe pas dans cet arbre » était faux — le test existe et passe 12/12
+   (re-exécuté par le coordinateur, et par les lanes B et C).
+
+### Non-régression séquentielle exécutée (après fusion)
+
+- `cargo build --workspace` : PASS ; `cargo fmt --all -- --check` : propre.
+- `cargo test --workspace` : **aucun échec** (toutes suites vertes).
+- `cargo clippy --workspace --all-targets -- -D warnings` : PASS.
+- Go : `(cd adapters/go && gofmt -l . && go vet ./... && go test -count=1 ./...)`
+  : 8 paquets PASS.
+- Java : `(cd adapters/java && mvn -B verify)` : BUILD SUCCESS, 14 AdapterTest +
+  4 LauncherIT.
+- Rust adaptateur : `(cd adapters/rust && cargo test)` : 13/13.
+- Harnais : `python3 -m unittest discover -s scripts -p 'test_*.py'` : 37 OK.
+- Traçabilité doc↔tests : `python3 scripts/check-doc-claims.py` : 19 PASS, 0 FAIL,
+  1 NOT_RUN (campagne longue, préexistant).
+
+### État
+
+Arbre non commité / non poussé (aucune autorisation de push/merge). Le commit
+local éventuel reste à la discrétion du commanditaire. Les items moteur
+(intervalles, point fixe récursif, heap, LLM réel, Context Builder tokenization)
+restent à planifier par ADR (voir `docs/limitations-coverage.md` L06-L18).

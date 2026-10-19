@@ -219,6 +219,39 @@ Contrat v0.2 et limites de précision v0.3–v0.5 conservés. La mutualisation
 du lanceur pour Rust/Java ne transforme pas les attestations Go et ne
 supprime aucune inconnue, hypothèse ou coupe.
 
+### Go — projets pré-modules (GOPATH, sans go.mod)
+
+Les projets antérieurs aux modules (GO111MODULE=off / GOPATH — go-cache,
+way, pat, columnize, …) sont désormais chargés explicitement via le champ de
+profil `gopath_import` :
+
+- Le champ sert à la fois de déclencheur et d'import path GOPATH déterministe
+  (ex. `"gopath_import":"github.com/patrickmn/go-cache"`). Il n'est actif que
+  quand la racine du projet n'a pas son propre `go.mod` ; un `go.mod` présent
+  (à la racine ou gouvernant la racine) garde le mode module, inchangé, et le
+  flag est ignoré. Sans flag sur une racine sans module : erreur explicite
+  `PROJECT_MODULE_REQUIRED` (actionnable), jamais d'import path dépendant de la
+  machine (`_/abs/path`).
+- Chargement : copie physique temporaire sous `$GOPATH/src/<import>` (un lien
+  symbolique serait résolu par `go` et traité comme hors GOPATH), chargement
+  `go list` seul (mode réduit, aucun typecheck des copies), puis réécriture des
+  chemins et typecheck source unique sur les fichiers réels. L'environnement
+  reste verrouillé : `GO111MODULE=off`, `GOFLAGS=` (le `-mod` est module-only),
+  `GOPATH=<tmp>`, et tous les verrous habituels (GOROOT, GOCACHE, GOMODCACHE,
+  GOPROXY=off, GOTOOLCHAIN=local, CGO_ENABLED=0, GOENV=off, GOEXPERIMENT=).
+- Honnêteté : `pkg.Module` est nil en mode GOPATH, donc l'empreinte ne porte
+  aucun métadonnée de module ; les unités sont `go:<import>@<goos>/<goarch>` ;
+  les sources, spans et décisions référencent les vrais fichiers du projet
+  (chemins relatifs à la racine). Deux chargements produisent la même
+  empreinte.
+- Frontières : la copie ignore les répertoires cachés (`.`/`_`, dont `.git`)
+  et ne suit pas les liens symboliques (sous-répertoire lié = non chargé,
+  fail-closed). Les dépendances tierces du projet ne sont pas résolues
+  (GOPROXY=off) : seuls la stdlib et les paquets du projet sont chargés. La
+  copie complète d'un très grand arbre est coûteuse (projets pré-modules
+  typiquement petits). Un futur `go` qui retirerait GO111MODULE=off ferait
+  échouer ce chemin avec une erreur explicite, sans analyse infondée.
+
 ### Rust
 
 Pilote MIR réel isolé, pas de types rustc dans le cœur. Construction de
@@ -245,6 +278,24 @@ La réflexion et les cibles dynamiques restent ouvertes (`world_closed=false`) ;
 les mappings source inexacts et gardes d'exceptions non modélisées restent
 explicites. La relecture Java est validée dans son périmètre borné, avec les
 mêmes inconnues conservatrices que le reste du moteur.
+
+Frontières réduites sur les deux rapports grandeur réelle (`docs/validation/realworld.md`) :
+
+- **Heap launcher** : le cap fixe `-Xmx512m` (qui faisait avorter en
+  `E_ADAPTER_LIMIT` les dépôts complets >~100 classes par OOM) est remplacé par
+  un défaut `-Xmx2g` configurable via `SKE_JAVA_XMX` (défaut conservé sûr pour
+  CI : `-Xms32m`, budget RSS ingest par défaut 4096 MiB). La variable est
+  transmise par `ske ingest java` (allowlist d'environnement de l'adaptateur).
+- **Exceptions implicites hors-appel** : un try/catch protecteur d'instructions
+  non-INVOKE (accès tableau/champ, arithmétique, cast) est abaissé par un
+  `SWITCH` de dispatch conservateur sur un tag opaque (CASE par handler dans
+  l'ordre de la table d'exceptions, DEFAULT vers le successeur normal) ; auparavant
+  le bloc handler restait déconnecté et son valeur SSA d'exception capturée sans
+  définition dominante faisait rejeter l'unité entière en `E_SSA_DOMINANCE`
+  (repro réels : json-simple `Yylex.zzScanError`). Chaque occurrence porte un
+  diagnostic `EXCEPTION_FLOW_PARTIAL`/`SYMBOLIC` explicitant la sur-approximation.
+  La règle SSA du cœur n'est pas affaiblie et le schéma CIR n'est pas modifié :
+  le CIR ne modélise les arêtes d'exception que sur les terminaisons `INVOKE`.
 
 ## v0.7 — API de connaissance, MCP et LLM optionnel (validée)
 

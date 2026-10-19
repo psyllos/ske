@@ -195,7 +195,14 @@ fn run<T>(
         command.process_group(0);
     }
     command.env_clear();
-    for key in ["PATH", "HOME", "GOCACHE", "GOMODCACHE", "GOROOT"] {
+    for key in [
+        "PATH",
+        "HOME",
+        "GOCACHE",
+        "GOMODCACHE",
+        "GOROOT",
+        "SKE_JAVA_XMX",
+    ] {
         if let Some(value) = std::env::var_os(key) {
             command.env(key, value);
         }

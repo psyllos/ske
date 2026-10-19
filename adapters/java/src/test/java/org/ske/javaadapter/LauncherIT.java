@@ -71,4 +71,40 @@ class LauncherIT {
         assertNull(Main.readFrame(bad.getInputStream(), Main.MAX_FRAME));
         assertEquals(1, bad.waitFor());
     }
+    // Reads the effective maximum heap (bytes) that the launcher passes to the JVM.
+    long launcherMaxHeap(String xmx) throws Exception {
+        var command = List.of(Path.of("ske-adapter-java").toAbsolutePath().toString(), "--max-heap");
+        var pb = new ProcessBuilder(command);
+        if (xmx != null) pb.environment().put("SKE_JAVA_XMX", xmx);
+        var process = pb.start();
+        assertEquals(0, process.waitFor(), new String(process.getErrorStream().readAllBytes()));
+        return Long.parseLong(new String(process.getInputStream().readAllBytes()).trim());
+    }
+    @Test void launcher_heap_is_configurable() throws Exception {
+        // Limitation: full real repos (>~100 classes, e.g. commons-lang/commons-collections
+        // full sources) overflowed the launcher's fixed -Xmx512m JVM heap and the OOM surfaced
+        // as E_ADAPTER_LIMIT. The heap must be configurable via SKE_JAVA_XMX, with a sane
+        // larger default, and the effective max heap honored by the spawned JVM. The adapter
+        // reports its configured maximum heap through the `--max-heap` diagnostic.
+        long gib = 1024L * 1024 * 1024;
+        // The JVM reports a slightly rounded max-heap for a given -Xmx (up to a few % smaller,
+        // growing with the request). Use a relative tolerance: the configured value must be
+        // honored within ~10%, and the values must be distinguishable from the 512m cap.
+        long defaultMb = launcherMaxHeap(null) / (1024 * 1024);
+        // The default must be a sane larger heap for full repos (not the old 512m cap).
+        assertTrue(defaultMb >= 1536, "default heap too small: " + defaultMb + "m");
+        long oneG = launcherMaxHeap("1g");
+        assertTrue(oneG >= 0.9 * gib && oneG < 2 * gib, "SKE_JAVA_XMX=1g not honored: " + oneG);
+        long threeG = launcherMaxHeap("3g");
+        assertTrue(threeG >= 2.7 * gib && threeG < 4 * gib, "SKE_JAVA_XMX=3g not honored: " + threeG);
+        assertTrue(threeG > launcherMaxHeap(null), "larger configured heap must exceed the default");
+        // A malformed override must be rejected loudly (never silently fall back or reach the JVM).
+        var bad = new ProcessBuilder(Path.of("ske-adapter-java").toAbsolutePath().toString(), "--max-heap");
+        bad.environment().put("SKE_JAVA_XMX", "banana");
+        var badProcess = bad.start();
+        String badErr = new String(badProcess.getErrorStream().readAllBytes());
+        assertEquals(1, badProcess.waitFor());
+        assertTrue(badErr.contains("LAUNCHER_CONFIG_INVALID"), badErr);
+        assertEquals("", new String(badProcess.getInputStream().readAllBytes()));
+    }
 }

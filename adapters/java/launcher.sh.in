@@ -14,6 +14,21 @@ if [ "$digest" != "@JAR_SHA256@" ]; then
     echo '{"event":"adapter_error","code":"ADAPTER_BINARY_MISMATCH"}' >&2
     exit 1
 fi
-exec java --sun-misc-unsafe-memory-access=allow -Xms32m -Xmx512m -Xss512k -XX:+UseSerialGC \
+# JVM heap, configurable through SKE_JAVA_XMX (accepts "2g", "1536m", "1G" or an
+# explicit "-Xmx2g"). The default is a larger heap than the historical 512m so that
+# full real repositories (>~100 classes) do not hit E_ADAPTER_LIMIT from an OOM that
+# the fixed -Xmx512m cap caused. An explicit SKE_JAVA_XMX is the operator's choice:
+# a malformed value fails loudly rather than reaching the JVM with an obscure error.
+xmx="-Xmx2g"
+if [ -n "${SKE_JAVA_XMX:-}" ]; then
+    case "$SKE_JAVA_XMX" in
+        -Xmx[0-9]*[kKmMgG]) xmx="$SKE_JAVA_XMX" ;;
+        [0-9]*[kKmMgG]) xmx="-Xmx$SKE_JAVA_XMX" ;;
+        *)
+            echo "{\"event\":\"adapter_error\",\"code\":\"LAUNCHER_CONFIG_INVALID\",\"message\":\"SKE_JAVA_XMX=$SKE_JAVA_XMX is not a valid JVM heap size (expected e.g. 2g, 1536m, -Xmx2g)\"}" >&2
+            exit 1 ;;
+    esac
+fi
+exec java --sun-misc-unsafe-memory-access=allow -Xms32m "$xmx" -Xss512k -XX:+UseSerialGC \
     -XX:CompressedClassSpaceSize=64m -XX:ReservedCodeCacheSize=64m \
     -XX:MaxMetaspaceSize=256m -jar "$jar" "$@"

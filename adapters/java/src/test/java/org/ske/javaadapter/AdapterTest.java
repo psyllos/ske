@@ -253,6 +253,135 @@ class AdapterTest {
                 && r.getDiagnostic().getCode().equals("UNSUPPORTED_INSTRUCTION")));
     }
 
+    // Port of the core's SSA validity checks (crates/ske-ingest/src/validate.rs): every
+    // SSA value must be defined exactly once, every block entry-reachable, and every
+    // SSA operand use dominated by its defining instruction's block.
+    static void assertSsaWellFormed(List<Cir.Record> extracted) throws Exception {
+        Map<String, String> valueType = new HashMap<>();
+        Map<String, Cir.ValueDef> value = new HashMap<>();
+        for (var r : extracted) if (r.hasValueDef()) {
+            var v = r.getValueDef();
+            value.put(v.getId(), v);
+            valueType.put(v.getId(), v.getTypeId());
+        }
+        Map<String, List<Cir.InstructionDef>> byBlock = new HashMap<>();
+        Map<String, Cir.InstructionDef> instrById = new HashMap<>();
+        for (var r : extracted) if (r.hasInstructionDef()) {
+            var i = r.getInstructionDef();
+            instrById.put(i.getId(), i);
+            byBlock.computeIfAbsent(i.getBlockId(), x -> new ArrayList<>()).add(i);
+        }
+        for (var list : byBlock.values()) list.sort(Comparator.comparingInt(Cir.InstructionDef::getOrdinal));
+        Map<String, Set<String>> graph = new HashMap<>();
+        for (var r : extracted) if (r.hasControlEdgeDef()) {
+            var e = r.getControlEdgeDef();
+            graph.computeIfAbsent(e.getSourceBlockId(), x -> new HashSet<>()).add(e.getTargetBlockId());
+        }
+        // Every SSA value must be defined exactly once by a real instruction.
+        Map<String, String> definedBy = new HashMap<>();
+        for (var list : byBlock.values()) for (var i : list) if (!i.getResultValueId().isEmpty()) {
+            String v = i.getResultValueId();
+            Cir.ValueDef vd = value.get(v);
+            // Only SSA roles are definition-scoped; param/const/global values are pre-defined.
+            if (vd != null && vd.getRole().equals("SSA") && !vd.getFunctionId().isEmpty())
+                assertNull(definedBy.put(v, i.getId()), "E_SSA_MULTI_DEF " + v);
+        }
+        // Reachability from the entry block.
+        Set<String> reachable = new HashSet<>();
+        Deque<String> work = new ArrayDeque<>();
+        for (var r : extracted) if (r.hasFunctionDef()) reachable.add(r.getFunctionDef().getEntryBlockId());
+        // Only seed reachable roots for functions that actually emitted blocks (non-external).
+        for (var r : extracted) if (r.hasFunctionDef() && !r.getFunctionDef().getIsExternal())
+            work.add(r.getFunctionDef().getEntryBlockId());
+        while (!work.isEmpty()) {
+            String b = work.pop();
+            for (String t : graph.getOrDefault(b, Set.of())) if (reachable.add(t)) work.add(t);
+        }
+        // Dominators computed by the classic iterative worklist over reachable blocks.
+        Map<String, Set<String>> dom = new HashMap<>();
+        Set<String> fnBlocks = new HashSet<>();
+        for (var r : extracted) if (r.hasBlockDef()) fnBlocks.add(r.getBlockDef().getId());
+        for (String b : reachable) { if (fnBlocks.contains(b)) dom.put(b, new HashSet<>(reachable)); }
+        for (var r : extracted) if (r.hasFunctionDef() && !r.getFunctionDef().getIsExternal())
+            dom.put(r.getFunctionDef().getEntryBlockId(), Set.of(r.getFunctionDef().getEntryBlockId()));
+        boolean changed;
+        do {
+            changed = false;
+            for (String b : reachable) {
+                if (!dom.containsKey(b)) continue;
+                var preds = new ArrayList<String>();
+                for (var e : graph.entrySet()) if (e.getValue().contains(b) && dom.containsKey(e.getKey())) preds.add(e.getKey());
+                if (preds.isEmpty()) continue;
+                Set<String> intersect = preds.isEmpty() ? new HashSet<>() : new HashSet<>(dom.get(preds.get(0)));
+                for (int k = 1; k < preds.size(); k++) intersect.retainAll(dom.get(preds.get(k)));
+                Set<String> candidate = new HashSet<>(intersect); candidate.add(b);
+                if (!candidate.equals(dom.get(b))) { dom.put(b, candidate); changed = true; }
+            }
+        } while (changed);
+        // Every SSA value defined, and every use dominated by its definition.
+        Map<String, String> blockOf = new HashMap<>();
+        for (var e : byBlock.entrySet()) for (var i : e.getValue()) blockOf.put(i.getId(), e.getKey());
+        for (var r : extracted) if (r.hasInstructionDef()) {
+            var i = r.getInstructionDef();
+            String useBlock = i.getBlockId();
+            int useOrdinal = i.getOrdinal();
+            for (String operand : i.getOperandValueIdsList()) {
+                Cir.ValueDef vd = value.get(operand);
+                if (vd == null || !vd.getRole().equals("SSA") || vd.getFunctionId().isEmpty()) continue;
+                String def = definedBy.get(operand);
+                assertNotNull(def, "E_SSA_DOMINANCE undefined " + operand);
+                String defBlock = blockOf.get(def);
+                assertNotNull(defBlock, "E_SSA_DOMINANCE missing def block " + operand);
+                if (defBlock.equals(useBlock)) {
+                    assertTrue(instrById.get(def).getOrdinal() < useOrdinal, "E_SSA_DOMINANCE order " + operand);
+                } else {
+                    // defBlock must dominate useBlock: the def must be in the use block's
+                    // dominator set.
+                    Set<String> d = dom.get(useBlock);
+                    assertTrue(d != null && d.contains(defBlock),
+                        "E_SSA_DOMINANCE not dominated: " + operand + " def@" + defBlock + " use@" + useBlock);
+                }
+            }
+        }
+    }
+
+    @Test void implicit_exception_handlers_keep_ssa_dominated() throws Exception {
+        // Regression for real-project failures (json-simple Yylex.zzScanError, commons-codec
+        // Hex.encode): a try/catch whose protected range contains a non-invoke throwing
+        // statement (array load) previously emitted the catch handler as a disconnected block.
+        // Its pre-allocated caught-exception SSA value had no dominating definition and the
+        // core rejected the whole unit with E_SSA_DOMINANCE. The CFG must instead stay valid:
+        // handlers reachable, every SSA value defined exactly once and dominated.
+        Path project = Files.createTempDirectory(Path.of("target"), "catch-array-").toRealPath();
+        Files.createDirectories(project.resolve("src/main/java"));
+        Files.createDirectories(project.resolve("target/classes"));
+        Path java = project.resolve("src/main/java/CatchArray.java");
+        Files.writeString(java, """
+            public class CatchArray {
+                private static final String[] MSGS = { "a", "b" };
+                public static void msg(int i) {
+                    String m;
+                    try {
+                        m = MSGS[i];
+                    } catch (ArrayIndexOutOfBoundsException e) {
+                        m = MSGS[0];
+                    }
+                    throw new Error(m);
+                }
+            }
+            """);
+        assertEquals(0, ToolProvider.getSystemJavaCompiler().run(null, null, null, "--release", "17", "-g",
+            "-d", project.resolve("target/classes").toString(), java.toString()));
+        var extracted = new Extractor(project, Main.Profile.parse("")).extract();
+        assertSsaWellFormed(extracted);
+        // The unit must complete (CLOSED/PARTIAL), never abort with a UNIT_FAILED error.
+        var end = extracted.get(extracted.size() - 1).getEndUnit();
+        assertEquals("PARTIAL", end.getInventoryStatus(), "expected PARTIAL, but core rejects the IR");
+        assertTrue(extracted.stream().filter(Cir.Record::hasDiagnostic).map(Cir.Record::getDiagnostic)
+            .noneMatch(d -> d.getCode().equals("UNIT_FAILED") || d.getCode().equals("E_SSA_DOMINANCE")),
+            "unexpected ingestion error");
+    }
+
     @Test void boolean_guards_and_char_switch_are_modeled() throws Exception {
         // Regression for real-project failures (godotenv-style null guards, boolean
         // invoke results, char switches) that previously ABORTED the whole unit:

@@ -14,6 +14,7 @@ use std::{
     fs,
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
+    sync::Mutex,
     thread,
     time::{Duration, Instant},
 };
@@ -207,6 +208,28 @@ fn adapter_list_units_request_eof_and_clean_environment() {
     assert!(Path::new(&request.project_root).is_absolute());
     assert_eq!(request.build_profile_json, "{}");
     assert_eq!(request.limits.unwrap().timeout_ms, 5000);
+}
+
+#[test]
+fn adapter_forwards_ske_java_xmx_when_set_and_otherwise_drops_it() {
+    // The launcher heap override (SKE_JAVA_XMX) must survive the env_clear allowlist so it
+    // reaches the Java launcher through `ske ingest java`; unset means the default applies.
+    static LOCK: Mutex<()> = Mutex::new(());
+    let _guard = LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let child = ChildFixture::new(
+        &frames(vec![unit(), done()]),
+        "test \"$SKE_JAVA_XMX\" = 3g || exit 97\ncat response",
+    );
+    std::env::set_var("SKE_JAVA_XMX", "3g");
+    let set = child.list(&limits());
+    std::env::remove_var("SKE_JAVA_XMX");
+    assert_eq!(set.unwrap().len(), 1);
+    let child = ChildFixture::new(
+        &frames(vec![unit(), done()]),
+        "test -z \"${SKE_JAVA_XMX:-}\" || exit 96\ncat response",
+    );
+    let unset = child.list(&limits());
+    assert_eq!(unset.unwrap().len(), 1);
 }
 #[test]
 fn adapter_list_units_rejects_missing_done_wrong_body_duplicate_done_and_error() {

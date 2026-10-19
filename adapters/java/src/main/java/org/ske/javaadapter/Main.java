@@ -61,6 +61,12 @@ public final class Main {
             System.out.println(VERSION);
             return;
         }
+        // Diagnostic for the launcher heap: print the effective maximum heap in bytes so
+        // tests (and operators) can verify SKE_JAVA_XMX / the default -Xmx are honored.
+        if (Arrays.equals(args, new String[]{"--max-heap"})) {
+            System.out.println(Runtime.getRuntime().maxMemory());
+            return;
+        }
         try {
             if (args.length != 0) throw new IOException("unknown arguments");
             if (!System.getProperty("java.version").equals("24.0.1"))

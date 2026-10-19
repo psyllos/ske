@@ -82,6 +82,29 @@ def structured_facts(q, cfg, branches):
                       if i["opcode"] == "RETURN"))
 
 
+def ram_bytes(system, run):
+    """Host RAM in bytes: sysctl hw.memsize (Darwin) or sysconf (Linux).
+
+    `run` is the Campaign.run callable used for the Darwin sysctl query.
+    """
+    if system == "Darwin":
+        return int(run("ram", ["sysctl", "-n", "hw.memsize"]))
+    return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+
+
+def require_determinism(projections):
+    """Fail closed unless the two campaign repeats are bit-identical."""
+    if projections[0] != projections[1]:
+        raise ValueError("inventory or analysis determinism mismatch")
+    return dict(equal=True, solver_seed=0, repeats=2)
+
+
+def require_integrity(check):
+    """Fail closed unless `db check` reports ok."""
+    if check.get("ok") is not True:
+        raise ValueError("database integrity failed")
+
+
 def score(answers, corpus=CORPUS):
     if set(answers) != {q["id"] for q in corpus}:
         raise ValueError("incomplete answer corpus")
@@ -125,6 +148,34 @@ class Campaign:
         text = stdout.read_text()
         return strict_json(text) if json_output else text.strip()
 
+    def build(self):
+        """(Re)build both binaries unconditionally so measurements match HEAD."""
+        self.run("build-ske", ["cargo", "build", "--locked", "-p", "ske-cli"])
+        self.run("build-adapter", ["go", "build", "-o", ADAPTER, "./cmd/ske-adapter-go"],
+                 cwd=ROOT / "adapters/go")
+
+    def measure_arms(self, ske):
+        """Run both retrieval arms over CORPUS; per-question costs and metrics."""
+        arms = {}
+        for arm in ("without_structured", "with_structured"):
+            answers, costs = {}, {}
+            for q in CORPUS:
+                f = q["function"]
+                start = time.perf_counter()
+                if arm == "without_structured":
+                    text = (LAB / f"{f.lower()}.go").read_text()
+                    answers[q["id"]] = source_facts(text, f, q["kind"])
+                else:
+                    cfg = ske(f"retrieve-{q['id']}-cfg", "functions", "cfg",
+                              "--function", f"example.{f}")
+                    branch = ske(f"retrieve-{q['id']}-branches", "branches", "list",
+                                 "--function", f"example.{f}")
+                    answers[q["id"]] = structured_facts(q, cfg, branch)
+                costs[q["id"]] = (time.perf_counter() - start) * 1000
+            arms[arm] = dict(answers=answers, metrics=score(answers),
+                             per_question_wall_ms=costs)
+        return arms
+
 
 def projection(db):
     with sqlite3.connect(db) as conn:
@@ -142,12 +193,9 @@ def projection(db):
 
 def execute(c):
     r, run = c.report, c.run
-    run("build-ske", ["cargo", "build", "--locked", "-p", "ske-cli"])
-    run("build-adapter", ["go", "build", "-o", ADAPTER, "./cmd/ske-adapter-go"],
-        cwd=ROOT / "adapters/go")
+    c.build()
     system = platform.system()
-    ram = (int(run("ram", ["sysctl", "-n", "hw.memsize"])) if system == "Darwin"
-           else os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES"))
+    ram = ram_bytes(system, run)
     r["environment"] = dict(
         os=platform.platform(), machine=platform.machine(), ram_bytes=ram,
         cpu=run("cpu", ["sysctl", "-n", "machdep.cpu.brand_string"]) if system == "Darwin"
@@ -188,27 +236,9 @@ def execute(c):
             if analysis["run_status"] != "COMPLETED":
                 raise ValueError("incomplete analysis")
         if repeat == 0:
-            r["arms"] = {}
-            for arm in ("without_structured", "with_structured"):
-                answers, costs = {}, {}
-                for q in CORPUS:
-                    start = time.perf_counter()
-                    f = q["function"]
-                    if arm == "without_structured":
-                        text = (LAB / f"{f.lower()}.go").read_text()
-                        answers[q["id"]] = source_facts(text, f, q["kind"])
-                    else:
-                        cfg = ske(f"retrieve-{q['id']}-cfg", "functions", "cfg",
-                                  "--function", f"example.{f}")
-                        branch = ske(f"retrieve-{q['id']}-branches", "branches", "list",
-                                     "--function", f"example.{f}")
-                        answers[q["id"]] = structured_facts(q, cfg, branch)
-                    costs[q["id"]] = (time.perf_counter() - start) * 1000
-                r["arms"][arm] = dict(answers=answers, metrics=score(answers),
-                                      per_question_wall_ms=costs)
+            r["arms"] = c.measure_arms(ske)
             (c.out / "retrieval.json").write_text(json.dumps(r["arms"], indent=2) + "\n")
-        if ske("integrity", "db", "check").get("ok") is not True:
-            raise ValueError("database integrity failed")
+        require_integrity(ske("integrity", "db", "check"))
         with sqlite3.connect(db) as conn:
             r.setdefault("databases", []).append(dict(
                 bytes=db.stat().st_size,
@@ -219,9 +249,7 @@ def execute(c):
                 solver=conn.execute("SELECT DISTINCT solver_name,solver_version,budget_json FROM analysis_runs").fetchall()))
         projections.append(projection(db))
     (c.out / "determinism.json").write_text(json.dumps(projections, indent=2) + "\n")
-    if projections[0] != projections[1]:
-        raise ValueError("inventory or analysis determinism mismatch")
-    r["determinism"] = dict(equal=True, solver_seed=0, repeats=2)
+    r["determinism"] = require_determinism(projections)
     r["exactitude"] = "PARTIAL LAB inventory; lexical retrieval is not semantic soundness"
     r["complete"] = True
 

@@ -17,6 +17,7 @@ Ne pas commencer v0.2 avant les 42 AC v0.1 PASS ou dérogation approuvée.
 | v0.5 — connaissance comportementale | DONE | 13 AC PASS ; non-régression 42 AC v0.1 + 25 AC v0.2 + 29 AC v0.3 + 14 AC v0.4 PASS. Voir validation/v0.5.md, le dernier journal et les frontières dans soundness-and-limits.md |
 | v0.6 — adaptateurs Rust et Java | DONE | 14 AC PASS sur `python3 scripts/validate-v06.py` (commit `22f0399`, tag `cir-v1.0-frozen`) ; 123 AC antérieurs rejoués ; main poussé à `a4a17db`, CI Linux/macOS verte (run 39026189933). Limites §10.1 documentées par ADR |
 | v0.7 — API/MCP/LLM, incréments | DONE | 11 AC PASS sur `python3 scripts/validate-v07.py` complet (exit 0) : DTO indépendant rusqlite + 10 services §11.7, pagination/troncature, outils MCP, explain/impact, Context Builder, LLM avec mock HTTP/consentement/prop_no_llm_proof, benchmark comparatif, et non-régression complète v0.1–v0.6 rejouée (137 AC) + `verify.sh` `VERIFY OK v0.7`. Voir `docs/validation/v0.7.md` |
+| Couverture de limitations (post-v0.7, sans nouveau jalon) | LIVRE | 4 lanes TDD : Rust `/` `%` représentables (assert MIR → BRANCH+PANIC) ; Go pré-modules (`gopath_import`, fallback GOPATH) ; Java heap configurable (`SKE_JAVA_XMX`, défaut 2g) + fix `E_SSA_DOMINANCE` handlers déconnectés ; harnais benchmark re-vérifié. Voir `docs/limitations-coverage.md` et le dernier journal. Non-régression : `cargo test --workspace`, adaptateurs Go/Java/Rust verts, clippy/fmt propres, `check-doc-claims` 19 PASS, 37 tests harnais |
 
 ## Fonctionnalités §1.1
 

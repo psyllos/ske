@@ -206,6 +206,11 @@ final class Extractor {
         final Map<Stmt, List<Cir.ControlEdgeDef>> statementEdges = new IdentityHashMap<>();
         final Map<String, String> constants = new HashMap<>();
         final List<String> handlers;
+        // Catch-handler statements that already have an incoming edge. `invoke()` emits
+        // exception edges to call handlers; implicit-exception dispatch switches connect
+        // the remaining ones. Any handler left with no incoming edge becomes a dead block
+        // whose pre-allocated caught-exception SSA value the core rejects (E_SSA_DOMINANCE).
+        final Set<Stmt> connectedHandlers = new HashSet<>();
         Body body;
         String block;
         int instruction, sequence, blockCount;
@@ -322,6 +327,13 @@ final class Extractor {
                     values.put(identity.getLeftOp(), paramIds.get(parameter.getIndex() + (method.isStatic() ? 0 : 1)));
                 else if (identity.getRightOp() instanceof JThisRef) values.put(identity.getLeftOp(), paramIds.get(0));
             }
+            // Handlers reachable through an invoke's exception edges are already wired, so
+            // implicit-exception dispatch must not fire for them (and must not duplicate the
+            // edge). SootUp reports exceptional successors for every statement inside a
+            // protected range, including handler-internal and invoke-adjacent statements.
+            for (Stmt s : statements)
+                if (s.isInvokableStmt() && s.asInvokableStmt().containsInvokeExpr())
+                    connectedHandlers.addAll(body.getStmtGraph().exceptionalSuccessors(s).values());
             // Allocate single-definition locals up front; assignments remain real SSA definitions.
             // Only Local left-hand sides get an SSA slot: array/field stores (`$a[i] = v`) carry a
             // non-Local LHS whose pre-allocated value would never be defined by their UNKNOWN_EFFECT
@@ -492,7 +504,38 @@ final class Extractor {
                 diagnostic(id, "UNSUPPORTED_INSTRUCTION", "EFFECTS", s.toString());
                 diagnostic(id, "EXCEPTION_FLOW_PARTIAL", "INVENTORY", "Implicit exceptions omitted: " + s);
             }
-            if (successors.size() == 1) {
+            // A non-invoke statement inside a protected range can still raise (array
+            // load/store, arithmetic, cast, field access). SootUp reports those handlers;
+            // if none of them has an incoming edge the handler chain would be dead and its
+            // pre-allocated caught-exception SSA value would have no dominating definition,
+            // making the core reject the whole unit with E_SSA_DOMINANCE (real projects:
+            // json-simple Yylex.zzScanError). The CIR models exception edges only on INVOKE
+            // terminators, so route not-yet-connected handlers through a conservative dispatch
+            // switch on an opaque tag: CASE per handler (original exception-table order),
+            // DEFAULT to the normal successor. Every outcome stays possible; handlers remain
+            // reachable and dominated, and already-connected handlers are left alone.
+            var exceptional = new ArrayList<>(body.getStmtGraph().exceptionalSuccessors(s).entrySet());
+            if (!exceptional.isEmpty() && exceptional.stream().anyMatch(e -> !connectedHandlers.contains(e.getValue()))) {
+                exceptional.sort(Comparator.comparingInt(e -> {
+                    int n = handlers.indexOf(e.getKey().toString());
+                    return n < 0 ? Integer.MAX_VALUE : n;
+                }));
+                String tag = havoc(type("int"));
+                var inst = instruction("SWITCH", true).addOperandValueIds(tag);
+                add(inst.build());
+                int index = 0;
+                for (var handler : exceptional) {
+                    connectedHandlers.add(handler.getValue());
+                    edge(s, inst.getId(), handler.getValue(), index, "CASE:" + index, "SWITCH_CASE",
+                        "", false, List.of(value(IntConstant.getInstance(index))), "", false);
+                    index++;
+                }
+                if (successors.size() != 1)
+                    throw new IllegalStateException("unsupported throwing Jimple successor count: " + s);
+                edge(s, inst.getId(), successors.get(0), index, "DEFAULT", "SWITCH_DEFAULT", "", false, List.of(), "", false);
+                diagnostic(id, "EXCEPTION_FLOW_PARTIAL", "SYMBOLIC",
+                    "Implicit exceptions of non-invoke statement over-approximated by dispatch switch: " + s);
+            } else if (successors.size() == 1) {
                 var jump = instruction("JUMP", true);
                 add(jump.build());
                 edge(s, jump.getId(), successors.get(0), 0, "NEXT", "UNCONDITIONAL", "", false, List.of(), "", false);

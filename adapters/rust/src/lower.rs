@@ -223,6 +223,42 @@ impl Emitter {
             let s: String = serde_json::from_str(text)
                 .map_err(|_| format!("unsupported string literal {text}"))?;
             (self.typ("&str"), R::StringBytes(s.into_bytes()))
+        } else if let Some(rest) = text.strip_suffix("::MIN") {
+            // Named integer bounds (`i32::MIN`, `u8::MAX`, ...) appear in the
+            // MIR runtime checks for `/` and `%` overflow (a == T::MIN &&
+            // divisor == -1). Tokens like `i32::MIN` carry no `_i32` suffix, so
+            // materialize the two's-complement bit pattern directly.
+            let typ = self.typ(rest);
+            let def = &self.types[&typ];
+            if def.kind != "BITVECTOR" {
+                return Err(format!("unsupported MIR named constant {text}"));
+            }
+            let width = def.bit_width;
+            let bits = if def.is_signed {
+                1u128 << (width - 1)
+            } else {
+                0
+            };
+            let bytes = bits.to_be_bytes()[16 - (width as usize).div_ceil(8)..].to_vec();
+            (typ, R::MachineBitsBe(bytes))
+        } else if let Some(rest) = text.strip_suffix("::MAX") {
+            // See above; same textual MIR shape, or match it to T::MIN for the
+            // `T::MAX` bound as Rust defines it.
+            let typ = self.typ(rest);
+            let def = &self.types[&typ];
+            if def.kind != "BITVECTOR" {
+                return Err(format!("unsupported MIR named constant {text}"));
+            }
+            let width = def.bit_width;
+            let bits = if def.is_signed {
+                (1u128 << (width - 1)) - 1
+            } else if width == 128 {
+                u128::MAX
+            } else {
+                (1u128 << width) - 1
+            };
+            let bytes = bits.to_be_bytes()[16 - (width as usize).div_ceil(8)..].to_vec();
+            (typ, R::MachineBitsBe(bytes))
         } else {
             let (n, t) = text
                 .rsplit_once('_')
@@ -500,6 +536,11 @@ fn lower_function(e: &mut Emitter, f: &MirFunction, source: &Function) -> Result
         exits.insert(b.clone(), env);
     }
     let mut branch_edges: Vec<(p::Span, String, String)> = vec![];
+    // Real MIR runtime-check asserts (`/`, `%`, ...) are lowered as BRANCHes
+    // whose panic side reaches one synthetic per-function PANIC block; a
+    // runtime-check `unwind continue` on a call still needs the unwind block.
+    let mut panic_block_needed = false;
+    let mut invoke_unwind_needed = false;
     for (ordinal, (b, lines)) in f.blocks.iter().enumerate() {
         e.records.push(record(C::BlockDef(p::BlockDef {
             id: bid(b),
@@ -664,100 +705,182 @@ fn lower_function(e: &mut Emitter, f: &MirFunction, source: &Function) -> Result
                 ins.opcode = "UNREACHABLE".into();
                 ins.is_terminator = true;
             } else if rhs.contains(" -> [") {
-                if dest.is_none() || rhs.starts_with("assert(") || rhs.starts_with("drop(") {
+                let (call, flow) = rhs.split_once(" -> [").ok_or("MIR call")?;
+                let flow = flow.trim_end_matches(']');
+                // MIR runtime checks (`assert(!_k, "...", ...) -> [success: bbN,
+                // unwind continue]`) guard real Rust panics such as division by
+                // zero and MIN / -1 overflow. Lower them as a real BRANCH over the
+                // asserted flag: the guarded FALSE edge (assertion held, e.g. the
+                // divisor is nonzero) continues to the success block; the TRUE edge
+                // (panic condition fired) reaches one per-function PANIC block that
+                // models the genuine panic. These branches are NOT linked to any
+                // source decision (branch_edges is only for real source IFs).
+                let mut assert_branch = None;
+                if let Some(assert_body) = call.strip_prefix("assert(") {
+                    let inner = assert_body.strip_suffix(')').ok_or_else(|| {
+                        format!("unsupported MIR assert shape in {}: {text}", f.name)
+                    })?;
+                    let cond = split_top(inner).first().copied().ok_or_else(|| {
+                        format!("MIR assert without condition in {}: {text}", f.name)
+                    })?;
+                    let (success, unwind) =
+                        flow.split_once(", unwind ").ok_or("MIR assert unwind")?;
+                    let success_target = success
+                        .strip_prefix("success: ")
+                        .ok_or("MIR assert success target")?;
+                    if unwind != "continue" {
+                        return Err(format!(
+                            "unsupported MIR assert unwind action {unwind} in {}: {text}",
+                            f.name
+                        ));
+                    }
+                    // cond is `!move _k` (a plain asserted flag) or `move _k`;
+                    // strip the leading negation and test the inner flag. CIR
+                    // BRANCH edge 0 is BRANCH_TRUE (guard not negated, taken when
+                    // the flag is true), edge 1 BRANCH_FALSE (negated, taken when
+                    // the flag is false). The assert succeeds when `cond` is true,
+                    // i.e. for `cond = !X` the panic fires exactly when X is true:
+                    // TRUE goes to PANIC, FALSE (assertion held) to success. For
+                    // `cond = X` it is the other way round.
+                    let (tested, panic_at_true) = match cond.strip_prefix('!') {
+                        Some(rest) => (rest, true),
+                        None => (cond, false),
+                    };
+                    let operand = e.operand(&fid, tested, &env)?;
+                    ins.opcode = "BRANCH".into();
+                    ins.is_terminator = true;
+                    ins.operand_value_ids = vec![operand.clone()];
+                    for n in 0..2 {
+                        let target = if (n == 0) == panic_at_true {
+                            format!("{fid}/panic")
+                        } else {
+                            bid(success_target)
+                        };
+                        edges.push(p::ControlEdgeDef {
+                            id: format!("{iid}/e:{n}"),
+                            source_block_id: bid(b),
+                            target_block_id: target.clone(),
+                            terminator_instruction_id: iid.clone(),
+                            outcome_ordinal: n as u32,
+                            edge_kind: if n == 0 {
+                                "BRANCH_TRUE"
+                            } else {
+                                "BRANCH_FALSE"
+                            }
+                            .into(),
+                            outcome_label: if n == 0 { "TRUE" } else { "FALSE" }.into(),
+                            guard_value_id: operand.clone(),
+                            guard_negated: n == 1,
+                            ..Default::default()
+                        });
+                        if target.ends_with("/panic") {
+                            panic_block_needed = true;
+                        }
+                    }
+                    // The panic side is a real, explored PANIC outcome; the
+                    // (human-readable) panic message is not carried in CIR.
+                    assert_branch = Some(());
+                } else if dest.is_none() || rhs.starts_with("drop(") {
                     return Err(format!(
                         "unsupported MIR assert/drop terminator in {}: {text}",
                         f.name
                     ));
                 }
-                let (call, flow) = rhs.split_once(" -> [").ok_or("MIR call")?;
-                let (callee, args) = call.rsplit_once('(').ok_or("MIR call arguments")?;
-                let args = args.strip_suffix(')').ok_or("MIR call closing paren")?;
-                let arguments = split_top(args)
-                    .into_iter()
-                    .map(|a| e.operand(&fid, a, &env))
-                    .collect::<Result<Vec<_>, _>>()?;
-                let signature = format!("{iid}/callee-type");
-                let return_type = e.value_types[&ins.result_value_id].clone();
-                e.types.insert(
-                    signature.clone(),
-                    p::TypeDef {
-                        id: signature.clone(),
-                        kind: "FUNCTION".into(),
-                        canonical_descriptor: callee.into(),
-                        param_type_ids: arguments
-                            .iter()
-                            .map(|a| e.value_types[a].clone())
-                            .collect(),
-                        result_type_ids: vec![return_type],
-                        ..Default::default()
-                    },
-                );
-                let callee_value = e.value(format!("{iid}/callee"), &fid, signature, "SSA", None);
-                e.records.push(record(C::InstructionDef(p::InstructionDef {
-                    id: format!("{iid}/callee-unknown"),
-                    block_id: bid(b),
-                    ordinal: ins.ordinal,
-                    opcode: "UNDEF".into(),
-                    result_value_id: callee_value.clone(),
-                    ..Default::default()
-                })));
-                ins.ordinal += 1;
-                ins_ordinal += 1;
-                ins.opcode = "INVOKE".into();
-                ins.is_terminator = true;
-                ins.operand_value_ids = std::iter::once(callee_value).chain(arguments).collect();
-                ins.payload = Some(p::OperationPayload {
-                    details: Some(p::operation_payload::Details::Call(p::CallSemantics {
-                        dispatch_kind: "UNKNOWN".into(),
-                        may_raise: Some(true),
-                        may_mutate_memory: Some(true),
-                        world_closed: false,
-                        ..Default::default()
-                    })),
-                    ..Default::default()
-                });
-                let flow = flow.trim_end_matches(']');
-                let (normal, unwind) = flow.split_once(", unwind ").ok_or("MIR call unwind")?;
-                let normal = normal
-                    .strip_prefix("return: ")
-                    .ok_or("MIR call normal target")?;
-                let exception = if unwind == "continue" {
-                    format!("{fid}/unwind")
-                } else if let Some(target) = unwind.strip_prefix(": ") {
-                    bid(target)
+                if assert_branch.is_some() {
+                    // Handled above; a runtime-check assert is not a call.
                 } else {
-                    return Err(format!("unsupported unwind action {unwind}"));
-                };
-                edges.push(p::ControlEdgeDef {
-                    id: format!("{iid}/e:0"),
-                    source_block_id: bid(b),
-                    target_block_id: bid(normal),
-                    terminator_instruction_id: iid.clone(),
-                    outcome_ordinal: 0,
-                    edge_kind: "NORMAL".into(),
-                    outcome_label: "NORMAL".into(),
-                    ..Default::default()
-                });
-                edges.push(p::ControlEdgeDef {
-                    id: format!("{iid}/e:1"),
-                    source_block_id: bid(b),
-                    target_block_id: exception,
-                    terminator_instruction_id: iid.clone(),
-                    outcome_ordinal: 1,
-                    edge_kind: "EXCEPTION".into(),
-                    outcome_label: "EXCEPTION".into(),
-                    exception_catch_all: true,
-                    ..Default::default()
-                });
-                e.records.push(diagnostic(
-                    "CALL_TARGET_UNRESOLVED",
-                    "CALLGRAPH",
-                    callee,
-                    &fid,
-                ));
-                e.records.push(diagnostic("RUST_CALL_EFFECTS_PARTIAL", "EFFECTS",
+                    // INVOKE call terminator: `_d = callee(args) -> [return: bbN,
+                    // unwind action]`. Asserts were already lowered above.
+                    let (callee, args) = call.rsplit_once('(').ok_or("MIR call arguments")?;
+                    let args = args.strip_suffix(')').ok_or("MIR call closing paren")?;
+                    let arguments = split_top(args)
+                        .into_iter()
+                        .map(|a| e.operand(&fid, a, &env))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let signature = format!("{iid}/callee-type");
+                    let return_type = e.value_types[&ins.result_value_id].clone();
+                    e.types.insert(
+                        signature.clone(),
+                        p::TypeDef {
+                            id: signature.clone(),
+                            kind: "FUNCTION".into(),
+                            canonical_descriptor: callee.into(),
+                            param_type_ids: arguments
+                                .iter()
+                                .map(|a| e.value_types[a].clone())
+                                .collect(),
+                            result_type_ids: vec![return_type],
+                            ..Default::default()
+                        },
+                    );
+                    let callee_value =
+                        e.value(format!("{iid}/callee"), &fid, signature, "SSA", None);
+                    e.records.push(record(C::InstructionDef(p::InstructionDef {
+                        id: format!("{iid}/callee-unknown"),
+                        block_id: bid(b),
+                        ordinal: ins.ordinal,
+                        opcode: "UNDEF".into(),
+                        result_value_id: callee_value.clone(),
+                        ..Default::default()
+                    })));
+                    ins.ordinal += 1;
+                    ins_ordinal += 1;
+                    ins.opcode = "INVOKE".into();
+                    ins.is_terminator = true;
+                    ins.operand_value_ids =
+                        std::iter::once(callee_value).chain(arguments).collect();
+                    ins.payload = Some(p::OperationPayload {
+                        details: Some(p::operation_payload::Details::Call(p::CallSemantics {
+                            dispatch_kind: "UNKNOWN".into(),
+                            may_raise: Some(true),
+                            may_mutate_memory: Some(true),
+                            world_closed: false,
+                            ..Default::default()
+                        })),
+                        ..Default::default()
+                    });
+                    let (normal, unwind) = flow.split_once(", unwind ").ok_or("MIR call unwind")?;
+                    let normal = normal
+                        .strip_prefix("return: ")
+                        .ok_or("MIR call normal target")?;
+                    let exception = if unwind == "continue" {
+                        invoke_unwind_needed = true;
+                        format!("{fid}/unwind")
+                    } else if let Some(target) = unwind.strip_prefix(": ") {
+                        bid(target)
+                    } else {
+                        return Err(format!("unsupported unwind action {unwind}"));
+                    };
+                    edges.push(p::ControlEdgeDef {
+                        id: format!("{iid}/e:0"),
+                        source_block_id: bid(b),
+                        target_block_id: bid(normal),
+                        terminator_instruction_id: iid.clone(),
+                        outcome_ordinal: 0,
+                        edge_kind: "NORMAL".into(),
+                        outcome_label: "NORMAL".into(),
+                        ..Default::default()
+                    });
+                    edges.push(p::ControlEdgeDef {
+                        id: format!("{iid}/e:1"),
+                        source_block_id: bid(b),
+                        target_block_id: exception,
+                        terminator_instruction_id: iid.clone(),
+                        outcome_ordinal: 1,
+                        edge_kind: "EXCEPTION".into(),
+                        outcome_label: "EXCEPTION".into(),
+                        exception_catch_all: true,
+                        ..Default::default()
+                    });
+                    e.records.push(diagnostic(
+                        "CALL_TARGET_UNRESOLVED",
+                        "CALLGRAPH",
+                        callee,
+                        &fid,
+                    ));
+                    e.records.push(diagnostic("RUST_CALL_EFFECTS_PARTIAL", "EFFECTS",
                     "external calls preserve normal/unwind paths but return values and memory effects remain unknown", &fid));
+                }
             } else if dest.is_some() {
                 if let Ok(v) = e.operand(&fid, rhs, &env) {
                     ins.opcode = "COPY".into();
@@ -802,18 +925,43 @@ fn lower_function(e: &mut Emitter, f: &MirFunction, source: &Function) -> Result
             return Err(format!("MIR block {b} has no recognized terminator"));
         }
     }
-    if f.blocks
-        .values()
-        .flatten()
-        .any(|l| l.text.contains(", unwind continue]"))
-    {
+    // Synthetic blocks share the ordinal space after the real MIR blocks
+    // (which run 0..f.blocks.len()-1). The PANIC block, when present, occupies
+    // f.blocks.len() and the unwind block the next slot, so a function can
+    // contain both without an E_ORDINAL_DUPLICATE collision.
+    let panic_ordinal = f.blocks.len() as u32;
+    let unwind_ordinal = panic_ordinal + u32::from(panic_block_needed);
+    // One per-function PANIC block reached from every runtime-check assert
+    // (division/remainder by zero, MIN / -1 overflow). Its single PANIC
+    // instruction is a real Rust panic: the incoming BRANCH_TRUE guards carried
+    // the panic condition into this block, so the exit is genuine, never
+    // fabricated unreachability.
+    if panic_block_needed {
+        let block = format!("{fid}/panic");
+        let flag = e.constant(&fid, "true")?;
+        e.records.push(record(C::BlockDef(p::BlockDef {
+            id: block.clone(),
+            function_id: fid.clone(),
+            ordinal: panic_ordinal,
+        })));
+        e.records.push(record(C::InstructionDef(p::InstructionDef {
+            id: format!("{fid}/panic/panic"),
+            block_id: block,
+            ordinal: 0,
+            opcode: "PANIC".into(),
+            operand_value_ids: vec![flag],
+            is_terminator: true,
+            ..Default::default()
+        })));
+    }
+    if invoke_unwind_needed {
         let block = format!("{fid}/unwind");
         let typ = e.typ("rust-unwind-payload");
         let value = e.value(format!("{fid}/unwind/value"), &fid, typ, "SSA", None);
         e.records.push(record(C::BlockDef(p::BlockDef {
             id: block.clone(),
             function_id: fid.clone(),
-            ordinal: f.blocks.len() as u32,
+            ordinal: unwind_ordinal,
         })));
         e.records.push(record(C::InstructionDef(p::InstructionDef {
             id: format!("{fid}/unwind/unknown"),

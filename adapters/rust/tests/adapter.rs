@@ -156,13 +156,22 @@ fn rust_loops_and_arithmetic_representable() {
     let text = "pub fn sum(n: i32) -> i32 {\n    let mut acc = 0;\n    let mut i = 0;\n    while i < n {\n        acc = acc + i;\n        i = i + 1;\n    }\n    acc\n}\npub fn diff(a: i32, b: i32) -> i32 { a - b }\n";
     let records = extract_text(text);
     // The fix's point: the unit no longer aborts on overflow-check asserts.
-    assert!(!records.iter().any(|r| matches!(&r.content, Some(C::Diagnostic(d)) if d.code == "MIR_UNSUPPORTED")));
+    assert!(!records
+        .iter()
+        .any(|r| matches!(&r.content, Some(C::Diagnostic(d)) if d.code == "MIR_UNSUPPORTED")));
     // Arithmetic is conservatively opaque (the adapter models comparisons, not
     // binops), but it must lower instead of killing the whole function.
-    assert!(records.iter().any(|r| matches!(&r.content, Some(C::InstructionDef(i)) if i.opcode == "OPAQUE_OP")));
+    assert!(records
+        .iter()
+        .any(|r| matches!(&r.content, Some(C::InstructionDef(i)) if i.opcode == "OPAQUE_OP")));
     // A loop back-edge is an UNCONDITIONAL edge back to an earlier block.
     let back = |id: &str| -> u32 {
-        id.rsplit_once('/').unwrap().1.trim_start_matches("bb").parse().unwrap()
+        id.rsplit_once('/')
+            .unwrap()
+            .1
+            .trim_start_matches("bb")
+            .parse()
+            .unwrap()
     };
     let has_back_edge = records.iter().any(|r| match &r.content {
         Some(C::ControlEdgeDef(e))
@@ -172,7 +181,84 @@ fn rust_loops_and_arithmetic_representable() {
         }
         _ => false,
     });
-    assert!(has_back_edge, "loop back-edge missing: the while body was not lowered");
+    assert!(
+        has_back_edge,
+        "loop back-edge missing: the while body was not lowered"
+    );
+}
+
+#[test]
+fn rust_division_and_remainder_representable() {
+    // Real Rust `/` and `%` compile to MIR runtime-check assert terminators
+    // (division by zero, and MIN / -1 overflow). The lowerer used to reject any
+    // `assert(...) -> [success: .., unwind ..]` terminator fail-closed
+    // (MIR_UNSUPPORTED), so one division killed the whole function: ripgrep,
+    // regex and regex-lite all hit it. Those asserts are real Rust panics, and
+    // are now lowered as a real BRANCH: the BRANCH_FALSE edge (guarded, divisor
+    // proven nonzero) continues to the division, the BRANCH_TRUE edge reaches a
+    // per-function synthetic PANIC block that models the real panic.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("src")).unwrap();
+    let text = "pub fn sum_mod(n: i32, d: i32) -> i32 {\n    let mut acc = 0;\n    let mut i = 0;\n    while i < n {\n        if i % 2 == 0 {\n            acc = acc + i;\n        }\n        i = i + 1;\n    }\n    acc / d + acc % d\n}\n";
+    std::fs::write(dir.path().join("src/lib.rs"), text).unwrap();
+    let profile = Profile::default();
+    let inventory = source::inventory(&profile.entry, text).unwrap();
+    let compiler =
+        Compiler::discover().expect("pinned compiler is required; this test must not be skipped");
+    let mir = compiler.mir(dir.path(), &profile).unwrap();
+    let records = lower::extract(&compiler, &profile, &inventory, &mir, text).unwrap();
+    // (a) The unit no longer aborts on the division/remainder asserts.
+    assert!(!records
+        .iter()
+        .any(|r| matches!(&r.content, Some(C::Diagnostic(d)) if d.code == "MIR_UNSUPPORTED")));
+    // (b) The division panics are modeled as a real PANIC, not silently
+    // dropped: a per-function /panic block, a PANIC terminator, and BRANCH_TRUE
+    // edges (the panic condition) pointing at it from the assert sites. The
+    // guarded BRANCH_FALSE edges carry the negated panic condition, i.e. the
+    // division path is the one where the divisor is proven nonzero.
+    assert!(
+        records
+            .iter()
+            .any(|r| matches!(&r.content, Some(C::BlockDef(b)) if b.id.ends_with("/panic"))),
+        "missing per-function /panic block: the division panics were dropped, not modeled"
+    );
+    assert!(records.iter().any(|r| matches!(&r.content, Some(C::InstructionDef(i)) if i.opcode == "PANIC" && i.is_terminator)), "missing PANIC terminator: the division panics were dropped, not modeled");
+    assert!(records.iter().any(|r| matches!(&r.content, Some(C::ControlEdgeDef(e)) if e.edge_kind == "BRANCH_TRUE" && e.target_block_id.ends_with("/panic") && !e.guard_negated)), "no BRANCH_TRUE edge targets the /panic block");
+    assert!(records.iter().any(|r| matches!(&r.content, Some(C::ControlEdgeDef(e)) if e.edge_kind == "BRANCH_FALSE" && e.guard_negated && !e.target_block_id.ends_with("/panic"))), "no guarded BRANCH_FALSE edge continues to the division path");
+    // (c) The loop back-edge survives the division asserts: the while body
+    // still lowers instead of the whole function failing.
+    let back = |id: &str| -> u32 {
+        id.rsplit_once('/')
+            .unwrap()
+            .1
+            .trim_start_matches("bb")
+            .parse()
+            .unwrap()
+    };
+    assert!(
+        records.iter().any(|r| match &r.content {
+            Some(C::ControlEdgeDef(e))
+                if e.edge_kind == "UNCONDITIONAL"
+                    && e.source_block_id.starts_with("rust:fn:sum_mod/") =>
+            {
+                back(&e.source_block_id) > back(&e.target_block_id)
+            }
+            _ => false,
+        }),
+        "loop back-edge missing: the while body was not lowered"
+    );
+    // The authoritative relational/dominance import must accept the new CFG
+    // (block with only a PANIC terminator, BRANCH guards referencing SSA temps).
+    let scratch = tempfile::tempdir().unwrap();
+    let cir = scratch.path().join("unit.pb");
+    let mut out = std::fs::File::create(&cir).unwrap();
+    for record in &records {
+        frame::write(&mut out, record, frame::LIMIT).unwrap();
+    }
+    let storage = ske_storage::Storage::open(scratch.path().join("ske.db")).unwrap();
+    let result =
+        ske_ingest::ingest_many(&storage, &[cir], Some(dir.path()), Some("rust-test")).unwrap();
+    assert_eq!(result["inventory_status"], "PARTIAL");
 }
 
 #[test]

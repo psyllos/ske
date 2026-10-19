@@ -21,6 +21,12 @@ type Profile struct {
 	Cgo          bool     `json:"cgo"`
 	Patterns     []string `json:"patterns"`
 	GoWork       *string  `json:"go_work"`
+	// GopathImport enables the pre-module (GOPATH, GO111MODULE=off) fallback for
+	// projects that have no go.mod anywhere under the root. It is both the opt-in
+	// flag and the deterministic import path under which the project is exposed,
+	// e.g. "github.com/foo/bar". Empty disables the fallback and is omitted from
+	// the profile JSON so existing module-mode fingerprints stay byte-identical.
+	GopathImport string `json:"gopath_import,omitempty"`
 }
 
 func Parse(text string) (Profile, error) {
@@ -58,7 +64,31 @@ func Parse(text string) (Profile, error) {
 			return p, fmt.Errorf("invalid pattern or tag")
 		}
 	}
+	if p.GopathImport != "" {
+		if err := validImportPath(p.GopathImport); err != nil {
+			return p, fmt.Errorf("invalid gopath_import: %w", err)
+		}
+	}
 	slices.Sort(p.Tags)
 	p.Tags = slices.Compact(p.Tags)
 	return p, nil
+}
+
+// validImportPath reports whether s can be used as a GOPATH import path element
+// sequence. It rejects absolute paths, empty or traversing elements, backslashes
+// and whitespace/control characters so the value can neither escape a GOPATH
+// src layout nor break the adapter protocol.
+func validImportPath(s string) error {
+	if strings.Contains(s, "\\") || strings.ContainsAny(s, "\x00\r\n \t") {
+		return fmt.Errorf("invalid characters")
+	}
+	if strings.HasPrefix(s, "/") {
+		return fmt.Errorf("must be relative")
+	}
+	for _, el := range strings.Split(s, "/") {
+		if el == "" || el == "." || el == ".." {
+			return fmt.Errorf("bad element %q", el)
+		}
+	}
+	return nil
 }

@@ -89,8 +89,10 @@ projets réels testés :
   `CLOSED/PARTIAL`, analyse conforme — `classify` 4 décisions/8 issues (4
   branches source), `bound` 2 décisions/4 issues.
 
-Le `%` (division par zéro) déclenche un assert MIR non modélisé → rejet
-explicite (fail-closed), conforme au contrat.
+Le `%` et `/` (division par zéro) émettent des asserts MIR au runtime ; ils sont
+désormais abaissés en BRANCH réels vers un bloc PANIC par fonction (panique
+Rust réelle modélisée, pas un rejet silencieux) — voir
+`rust_division_and_remainder_representable` (adapters/rust/tests/adapter.rs).
 
 ## Vérifications exécutées
 
@@ -147,12 +149,18 @@ analyse : 19 décisions IR / 38 issues, tous POSSIBLE — cohérent avec le
 type-switch abaissé. Le `switch i.(type)` source n'est pas attesté en source
 (mapping partiel documenté pour les asserts de type).
 
-### patrickmn/go-cache (Go, ~8.8k⭐) — limite réelle de l'adaptateur
+### patrickmn/go-cache (Go, ~8.8k⭐) — projet pré-modules, désormais supporté
 
-Projet **sans `go.mod`** (ère pré-modules) : `packages.Load` échoue avec
-`pattern ./...: directory prefix . does not contain main module`. L'adaptateur
-Go nécessite un module Go (go.mod). Comportement honnête (échec clair, pas
-d'analyse incorrecte), à documenter comme frontière : pas de support GO111MODULE=off.
+Projet **sans `go.mod`** (ère pré-modules). Jusqu'ici `packages.Load` en mode
+module échouait (`pattern ./...: directory prefix . does not contain main
+module`) et le snapshot était ABORTED — frontière documentée, pas de support
+GO111MODULE=off. Depuis le support pré-module de l'adaptateur (champ de profil
+`gopath_import`), un tel projet se charge explicitement en mode GOPATH :
+copie temporaire sous `$GOPATH/src/<import>`, `GO111MODULE=off`, typecheck
+source sur les fichiers réels, unités `go:<import>@<goos>/<goarch>`, aucune
+métadonnée de module. Voir `docs/soundness-and-limits.md` (section Go —
+pré-modules). Sans le flag, l'échec reste explicite et actionnable
+(`PROJECT_MODULE_REQUIRED`).
 
 ## Lot 3 — campagne systématique (sous-agents scout, en parallèle)
 
@@ -173,14 +181,29 @@ découlé.
   type-switch (`switch f.Value.(type)`) inventorié mais sans IR (UNKNOWN,
   conservateur).
 - Frontière : `matryer/way`, `bmizerany/pat` (sans go.mod, pré-modules) →
-  ABORTED propre (même limite que go-cache).
+  ABORTED propre à l'époque ; désormais chargeables via le champ de profil
+  `gopath_import` (même chemin que go-cache ci-dessus).
 
 ### java-b (rapport reçu) — vrai bug majeur, corrigé
 
 Voir `docs/work-log.md` (Lot 3) et les 3 correctifs `Extractor.java` :
 garde BRANCH BOOL, invoke booléen, élargissement char/byte. Repros et
 effective-java items 37/50 ingèrent désormais 0 erreur ; json-simple/commons-
-codec bloqués sur E_SSA_DOMINANCE de code généré (frontière documentée).
+codec étaient bloqués sur E_SSA_DOMINANCE de code généré.
+
+**Évolution (E_SSA_DOMINANCE réduit)** : la cause racine était un bug de
+l'adaptateur sur du bytecode ordinaire — un try/catch dont la plage protégée
+contient une instruction non-INVOKE qui peut lever (accès tableau, arithmétique,
+cast) laissait le bloc handler déconnecté (aucune arête entrante), donc sa valeur
+SSA d'exception capturée n'avait pas de définition dominante et le cœur rejetait
+l'unité en `E_SSA_DOMINANCE`. Correctif : les blocs concernés se terminent par un
+`SWITCH` de dispatch conservateur sur un tag opaque (CASE par handler dans l'ordre
+de la table d'exceptions, DEFAULT vers le successeur normal), gardant les handlers
+atteignables et dominés sans affaiblir la règle SSA ni changer le schéma. Repro réel :
+json-simple 1.1.1 (`Yylex.zzScanError`) passait de `ABORTED`/`E_SSA_DOMINANCE` à
+`CLOSED/PARTIAL` 0 erreur ; commons-codec Hex-style `CLOSED/PARTIAL` 0 erreur. Chaque
+occurrence porte un diagnostic `EXCEPTION_FLOW_PARTIAL`/`SYMBOLIC` (sur-approximation
+assumée).
 
 ### go-a (rapport reçu) — bug `any`/`interface{}` réel, corrigé
 
@@ -203,9 +226,9 @@ codec bloqués sur E_SSA_DOMINANCE de code généré (frontière documentée).
   (corps non-Windows = `return false`) ; `trap_windows.go` exclu par build-tag
   (INFO BUILD_TAG_EXCLUDED_FILE, seule limite réelle) ; `init` synthétique non
   confrontable.
-- Écartés (discipline) : ryanuber/columnize (sans go.mod, pré-modules,
-  frontière ABORTED identique à way/pat/go-cache), golang/groupcache (require
-  protobuf réel).
+- Écartés (discipline) : ryanuber/columnize (sans go.mod, pré-modules ;
+  chargeable désormais via `gopath_import`, voir go-cache ci-dessus),
+  golang/groupcache (require protobuf réel).
 
 ### rust-b (rapport reçu) — sous-ensemble réel étroit, 2 fonctions réelles ✓
 
@@ -289,5 +312,7 @@ Détails dans `target/realworld3/rust-b/report.md`.
   ✓ (SRC 3, 5, 1 décisions correspondant à la lecture manuelle ; switch 16 cas
   sur `Conversion.intToHexDigitMsb0` mappé exactement).
 - **commons-lang/commons-collections scopes** : CLOSED/PARTIAL 0 erreur,
-  confrontations ✓ ; full-repo >~100 classes → `E_ADAPTER_LIMIT` (cap launcher
-  -Xmx512m, limite documentée).
+  confrontations ✓. Le full-repo >~100 classes avortait en `E_ADAPTER_LIMIT` par
+  OOM sous le cap launcher fixe `-Xmx512m` (limite documentée) ; ce cap est
+  désormais un défaut `-Xmx2g` configurable via `SKE_JAVA_XMX` et transmis par
+  `ske ingest java` (voir `adapters/java/README.md`).
