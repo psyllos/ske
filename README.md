@@ -64,6 +64,31 @@ Après import CIR ou Go :
 target/debug/ske branches analyze --db "$DB" --snapshot latest --entry example.Decide --format json
 target/debug/ske branches list --db "$DB" --function example.Decide --run latest --format json
 target/debug/ske runs list --db "$DB" --format json
+
+### Scénarios et documentation fonctionnelle (v0.8)
+
+```sh
+target/debug/ske scenarios list --db "$DB" --snapshot latest
+    # scénarios reconstruits + capacité + lien_count
+target/debug/ske scenarios link --db "$DB" --snapshot latest --entry example.Entry
+    # matérialise les liens CALL CONFIRMED vers les callees reconstruits
+target/debug/ske scenarios show --db "$DB" --snapshot latest --entry example.Entry --depth 3
+    # chaîne causale entrée → callees → cas, frontière EXTERNAL_UNKNOWN
+
+target/debug/ske capabilities list --db "$DB" --snapshot latest
+    # capacités (titre/statut/nombre de scénarios)
+target/debug/ske capabilities nominate --db "$DB" --snapshot latest --entry example.Check --title "Éligibilité"
+    # nomination humaine : titre + HUMAN_VALIDATED
+target/debug/ske capabilities show --db "$DB" --snapshot latest --entry example.Check
+    # vue top-down : capacité → scénarios → cas
+
+target/debug/ske docs render --db "$DB" --snapshot latest --out docs/functional
+    # fiches Markdown package/fonction (run autoritatif, badges, preuves)
+target/debug/ske docs render --db "$DB" --snapshot latest --out docs/functional --capabilities
+    # + CAPABILITIES.md (vue top-down par capacité, dénominations humaines)
+```
+
+Voir [la validation v0.8](docs/validation/v0.8.md), [l'ADR-024](docs/adr/ADR-024.md).
 ```
 
 `POSSIBLE` n'est pas un témoin exécuté. `PROVEN_UNREACHABLE` est une preuve

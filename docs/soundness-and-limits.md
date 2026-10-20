@@ -198,11 +198,23 @@ Limites v0.5 (bornes assumées, non des défauts) :
   (`PARTIAL`, effets non modélisés) non réutilisés comme résumés complets.
   Pas de graphe de dépendances multi-snapshot exploité au-delà de
   `analysis_dependencies` (informatif, non cyclé).
-- **Scénario/capacité §7.5** : un scénario est un groupement technique par
-  snapshot+fonction ; l'origine est `DETERMINISTIC` et la validation
-  `UNVALIDATED` (aucune validation humaine ou LLM). Une frontière
-  `EXTERNAL_UNKNOWN` est déclarée quand des UNKNOWN_EFFECT existent ; elle ne
-  prétend pas fermer le comportement.
+- **Scénario/capacité §7.5 (v0.8)** : un scénario reste un groupement technique
+  par snapshot+fonction, mais `ske scenarios link` matérialise désormais des
+  `scenario_links` de type `CALL` (`confidence_kind=CONFIRMED`) entre le
+  scénario d'une entrée et ceux de ses callees statiques résolus (monde fermé,
+  non externes, eux-mêmes reconstruits). Un callee non reconstruit est reporté
+  `not_reconstructed`, jamais inventé. `ske scenarios show` calcule la chaîne
+  causale à la volée et s'arrête à la frontière `EXTERNAL_UNKNOWN`. Rien
+  d'interservice (EVENT/HTTP/MESSAGE/PERSISTENCE) n'est émis. La dénomination
+  métier (`functional_capabilities.title`) provient exclusivement de la
+  **nomination humaine** (`ske capabilities nominate` → `HUMAN_VALIDATED`, ou
+  `reject` → `REJECTED`) ; elle reste `NULL` sinon, et le LLM
+  (`LLM_INFERRED`) est déclaré futur (aucun token dépensé).
+  `ske docs render` produit des fiches Markdown package/fonction (matrice
+  condition→résultat, statuts, branches prouvées inaccessibles, ancres source),
+  et `--capabilities` ajoute `CAPABILITIES.md` (vue top-down, dénominations
+  humaines). Il ne crée jamais d'interprétation métier et n'honore que le run
+  autoritatif.
 - **Règles fonctionnelles** : dérivées de résumés ; `validation_status` reste
   `UNVALIDATED` sauf marquage `STALE` après `stale-check`. Le stale-check ne
   déduit rien sur les fonctions disparues (il les marque STALE, il ne les

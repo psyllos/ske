@@ -1062,6 +1062,18 @@ fn dependency_structure(
     Ok(result)
 }
 
+/// Public re-exports for the capabilities module (same repository-scoped
+/// semantics as the rules stale-check; kept private to query internals).
+pub(crate) fn resolve_snapshot_public(db: &Connection, repo: i64, selector: &str) -> Result<i64> {
+    resolve_snapshot(db, repo, selector)
+}
+pub(crate) fn dependency_structure_public(
+    db: &Connection,
+    entry: i64,
+) -> Result<std::collections::BTreeMap<(String, String), String>> {
+    dependency_structure(db, entry)
+}
+
 /// Resolve a snapshot selector (integer id or `latest`) within a repository.
 fn resolve_snapshot(db: &Connection, repo: i64, selector: &str) -> Result<i64> {
     if selector != "latest" {

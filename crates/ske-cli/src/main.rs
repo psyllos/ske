@@ -63,6 +63,18 @@ enum Command {
         #[command(subcommand)]
         command: Paths,
     },
+    Scenarios {
+        #[command(subcommand)]
+        command: Scenarios,
+    },
+    Capabilities {
+        #[command(subcommand)]
+        command: Capabilities,
+    },
+    Docs {
+        #[command(subcommand)]
+        command: Docs,
+    },
     Behaviors {
         #[command(subcommand)]
         command: Behaviors,
@@ -170,6 +182,63 @@ enum Paths {
         max_paths: Option<usize>,
         #[arg(long)]
         max_nodes: Option<usize>,
+    },
+}
+#[derive(Subcommand)]
+enum Scenarios {
+    List,
+    Link {
+        #[arg(long)]
+        entry: String,
+    },
+    LinkInter {
+        #[arg(long)]
+        entry: String,
+        #[arg(long)]
+        contracts: std::path::PathBuf,
+    },
+    Show {
+        #[arg(long)]
+        entry: String,
+        #[arg(long, default_value_t = 3)]
+        depth: usize,
+    },
+}
+#[derive(Subcommand)]
+enum Capabilities {
+    List,
+    Nominate {
+        #[arg(long)]
+        entry: String,
+        #[arg(long)]
+        title: String,
+    },
+    Reject {
+        #[arg(long)]
+        entry: String,
+    },
+    Show {
+        #[arg(long)]
+        entry: String,
+        #[arg(long, default_value_t = 3)]
+        depth: usize,
+    },
+    StaleCheck {
+        #[arg(long)]
+        repository: String,
+        #[arg(long)]
+        from: String,
+        #[arg(long)]
+        to: String,
+    },
+}
+#[derive(Subcommand)]
+enum Docs {
+    Render {
+        #[arg(long)]
+        out: std::path::PathBuf,
+        #[arg(long)]
+        capabilities: bool,
     },
 }
 #[derive(Subcommand)]
@@ -390,6 +459,65 @@ fn execute(cli: &Cli) -> Result<(Value, i32)> {
             cli.limit,
             cli.offset,
         )?,
+        Command::Scenarios {
+            command: Scenarios::List,
+        } => query.scenarios(&cli.snapshot, repository)?,
+        Command::Scenarios {
+            command: Scenarios::Link { entry },
+        } => query.scenarios_link(&cli.snapshot, repository, entry)?,
+        Command::Scenarios {
+            command: Scenarios::LinkInter { entry, contracts },
+        } => {
+            let text = std::fs::read_to_string(contracts).map_err(|e| {
+                ske_common::Error::new("E_USAGE", format!("cannot read contracts file: {e}"))
+            })?;
+            let payload: serde_json::Value = serde_json::from_str(&text).map_err(|e| {
+                ske_common::Error::new("E_USAGE", format!("invalid contracts JSON: {e}"))
+            })?;
+            let list = payload["contracts"].clone();
+            let contracts: Vec<ske_query::scenarios::InterContract> = serde_json::from_value(list)
+                .map_err(|e| {
+                    ske_common::Error::new(
+                        "E_USAGE",
+                        format!("invalid contracts schema (contracts[]): {e}"),
+                    )
+                })?;
+            query.scenarios_link_inter(&cli.snapshot, repository, entry, contracts)?
+        }
+        Command::Scenarios {
+            command: Scenarios::Show { entry, depth },
+        } => query.scenarios_show(&cli.snapshot, repository, entry, *depth)?,
+        Command::Capabilities {
+            command: Capabilities::List,
+        } => query.capabilities(&cli.snapshot, repository)?,
+        Command::Capabilities {
+            command: Capabilities::Nominate { entry, title },
+        } => query.capability_nominate(&cli.snapshot, repository, entry, title)?,
+        Command::Capabilities {
+            command: Capabilities::Reject { entry },
+        } => query.capability_reject(&cli.snapshot, repository, entry)?,
+        Command::Capabilities {
+            command: Capabilities::Show { entry, depth },
+        } => query.capability_show(&cli.snapshot, repository, entry, *depth)?,
+        Command::Capabilities {
+            command:
+                Capabilities::StaleCheck {
+                    repository: repo_name,
+                    from,
+                    to,
+                },
+        } => query.capability_stale_check(repo_name, from, to)?,
+        Command::Docs {
+            command: Docs::Render { out, capabilities },
+        } => {
+            if *capabilities {
+                let f = query.docs_render(&cli.snapshot, repository, out)?;
+                let c = query.docs_render_capabilities(&cli.snapshot, repository, out)?;
+                json!({ "fiches": f, "capabilities": c })
+            } else {
+                query.docs_render(&cli.snapshot, repository, out)?
+            }
+        }
         Command::Behaviors {
             command: Behaviors::Reconstruct { entry },
         } => {

@@ -13,9 +13,12 @@ mod analysis_load;
 mod analysis_read;
 mod behavior;
 mod callgraph;
+mod capabilities;
+mod docs;
 pub mod dto;
 mod knowledge;
 mod knowledge_services;
+pub mod scenarios;
 mod summaries;
 #[cfg(test)]
 mod summary_tests;
@@ -434,6 +437,121 @@ impl Query {
         Ok(
             json!({"snapshot_id":sid,"function":function["function"],"unit_key":function["unit_key"],"inventory":inventory,"analysis":null,"source_decisions":decisions,"ir_outcomes":ir,"page":page(limit,offset,total)}),
         )
+    }
+    /// List reconstructed scenarios, their capability and outgoing links
+    /// (v0.8, §7.5).
+    pub fn scenarios(&self, snapshot: &str, repository: Option<&str>) -> Result<Value> {
+        let sid = self.snapshot(snapshot, repository)?;
+        scenarios::list(self.db(), sid)
+    }
+    /// Materialize CALL scenario_links from the entry's scenario to its
+    /// composed callees' scenarios (v0.8). Idempotent; never invents a
+    /// callee without its own reconstructed scenario.
+    pub fn scenarios_link(
+        &self,
+        snapshot: &str,
+        repository: Option<&str>,
+        entry: &str,
+    ) -> Result<Value> {
+        let sid = self.snapshot(snapshot, repository)?;
+        scenarios::link(self.db(), sid, entry)
+    }
+    /// Display the causal mono-service chain from an entry, computed on the
+    /// fly (v0.8). Never persisted.
+    pub fn scenarios_show(
+        &self,
+        snapshot: &str,
+        repository: Option<&str>,
+        entry: &str,
+        depth: usize,
+    ) -> Result<Value> {
+        let sid = self.snapshot(snapshot, repository)?;
+        scenarios::show(self.db(), sid, entry, depth)
+    }
+    /// Materialize declared interservice scenario_links (v0.8): each contract
+    /// maps an UNKNOWN_EFFECT of `entry` to a scenario of another service in
+    /// the same database. Confidence is always INFERRED (declared hypothesis,
+    /// never proven causality).
+    pub fn scenarios_link_inter(
+        &self,
+        snapshot: &str,
+        repository: Option<&str>,
+        entry: &str,
+        contracts: Vec<scenarios::InterContract>,
+    ) -> Result<Value> {
+        let sid = self.snapshot(snapshot, repository)?;
+        scenarios::link_inter(self.db(), sid, entry, &contracts)
+    }
+    /// Read view of materialized scenario links (v0.8).
+    pub fn list_scenario_links(&self, snapshot: &str, repository: Option<&str>) -> Result<Value> {
+        let sid = self.snapshot(snapshot, repository)?;
+        scenarios::list_links(self.db(), sid)
+    }
+    /// List capabilities of a snapshot (v0.8, §7.5).
+    pub fn capabilities(&self, snapshot: &str, repository: Option<&str>) -> Result<Value> {
+        let sid = self.snapshot(snapshot, repository)?;
+        capabilities::list(self.db(), sid)
+    }
+    /// Human nomination: set the title of the entry's capability and mark it
+    /// HUMAN_VALIDATED (v0.8). Never automatic.
+    pub fn capability_nominate(
+        &self,
+        snapshot: &str,
+        repository: Option<&str>,
+        entry: &str,
+        title: &str,
+    ) -> Result<Value> {
+        let sid = self.snapshot(snapshot, repository)?;
+        capabilities::nominate(self.db(), sid, entry, title)
+    }
+    /// Reject the entry's capability nomination (v0.8). Title kept for audit.
+    pub fn capability_reject(
+        &self,
+        snapshot: &str,
+        repository: Option<&str>,
+        entry: &str,
+    ) -> Result<Value> {
+        let sid = self.snapshot(snapshot, repository)?;
+        capabilities::reject(self.db(), sid, entry)
+    }
+    /// Top-down view: the entry's capability + its scenarios' causal chains.
+    pub fn capability_show(
+        &self,
+        snapshot: &str,
+        repository: Option<&str>,
+        entry: &str,
+        depth: usize,
+    ) -> Result<Value> {
+        let sid = self.snapshot(snapshot, repository)?;
+        capabilities::show(self.db(), sid, entry, depth)
+    }
+    /// Mark capabilities of snapshot A stale when their entry function changed
+    /// or vanished in snapshot B of the same repository (v0.8, mirrors the
+    /// rules stale-check).
+    pub fn capability_stale_check(&self, repository: &str, from: &str, to: &str) -> Result<Value> {
+        capabilities::stale_check(self.db(), repository, from, to)
+    }
+    /// Render functional documentation fiches (package/function) from the
+    /// snapshot into `out` (v0.8). Returns the DTO of written files.
+    pub fn docs_render(
+        &self,
+        snapshot: &str,
+        repository: Option<&str>,
+        out: &Path,
+    ) -> Result<Value> {
+        let sid = self.snapshot(snapshot, repository)?;
+        docs::render(self.db(), sid, out)
+    }
+    /// Render the top-down capability view (v0.8) into `out`. Writes
+    /// `CAPABILITIES.md`.
+    pub fn docs_render_capabilities(
+        &self,
+        snapshot: &str,
+        repository: Option<&str>,
+        out: &Path,
+    ) -> Result<Value> {
+        let sid = self.snapshot(snapshot, repository)?;
+        docs::render_capabilities(self.db(), sid, out)
     }
     /// Reconstruct behaviors + rules + evidence for an entry function into the
     /// summary's snapshot (v0.5). Computes the summary first if needed. Returns

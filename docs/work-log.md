@@ -2172,3 +2172,97 @@ Arbre non commité / non poussé (aucune autorisation de push/merge). Le commit
 local éventuel reste à la discrétion du commanditaire. Les items moteur
 (intervalles, point fixe récursif, heap, LLM réel, Context Builder tokenization)
 restent à planifier par ADR (voir `docs/limitations-coverage.md` L06-L18).
+
+## v0.8 — Scénarios causaux et documentation fonctionnelle (cycle 1)
+
+Demande de psyllos : documentation fonctionnelle intelligible **à deux
+niveaux** — package/fonction (Étage 0) et scénario/capacité métier (Étage 1) —
+avec (B) comme destination de maturité. Décision : construire les deux, (A) en
+socle, (B) en étage au-dessus des mêmes faits structurés. ADR-024.
+
+### Livré (travail local, aucun push/merge)
+
+- **`ske scenarios list|link|show`** (module `crates/ske-query/src/scenarios.rs`) :
+  `link` matérialise `scenario_links` de type `CALL` (`confidence_kind=CONFIRMED`)
+  entre le scénario d'une entrée et ceux de ses callees statiques résolus
+  (monde fermé, non externes, reconstruits) ; idempotent ; callee non
+  reconstruit reporté `not_reconstructed`, jamais inventé. `show` calcule la
+  chaîne causale à la volée, frontière `EXTERNAL_UNKNOWN` honnête.
+- **`ske docs render`** (module `crates/ske-query/src/docs.rs`) : fiche Markdown
+  par fonction ayant un scénario reconstruit — matrice condition→résultat,
+  statut/origine des règles, branches prouvées inaccessibles (`MODEL_UNREACHABLE`),
+  ancres source ; **run autoritatif** (dernier `behavior_scenarios` de la
+  fonction) pour ne jamais dupliquer les cas d'un même résumé.
+- **Câblage CLI** (`crates/ske-cli/src/main.rs`) : sous-commandes `Scenarios`
+  et `Docs` ; `ske-query`/CLI : SQL isolé dans `ske-query`, le CLI ne quotidienne
+  que du dispatching (convention du dépôt).
+- **Tests** `crates/ske-cli/tests/scenarios_docs.rs` : 5 tests d'intégration
+  sur l'adaptateur Go réel (`go_support`), voir `docs/validation/v0.8.md`.
+
+### Résultats clés observés
+
+- `Entry→helper` : lien CALL CONFIRMED idempotent ; `helper` non reconstruit →
+  `not_reconstructed`, pas de lien inventé.
+- `scenarios show` : `Entry` 2 cas (comportement composé `a>100→return 1`) →
+  `helper` 2 cas ; aucune frontière close inventée.
+- `docs render` sur `Check` après deux reconstructions → **3 cas** (pas 6) :
+  la déduplication par run autoritatif fonctionne. Fiche `Decide` : section
+  « Branches dont l'inaccessibilité est prouvée » (`ALL_ARRIVALS_UNSAT`,
+  `MODEL_UNREACHABLE`, Z3 5.1.0.0).
+
+### Non-régression
+
+- `cargo test --workspace` : **376 PASS, 0 FAIL** (tous jalons antérieurs +
+  `scenarios_docs`).
+- `cargo fmt --all -- --check` propre ; `cargo clippy --workspace --all-targets
+  -- -D warnings` propre (excepté la vérification complète `verify.sh`, non
+  relancée jusqu'au bout dans cette session — le `check-doc-claims` affiche
+  `verify-chain` FAIL tant que la chaîne complète n'est pas rejouée ; voir la
+  session et les logs locaux).
+- Aucune migration, aucun schéma modifié. `cir-v1.0-frozen` non touché.
+
+### Limites et suites (étage suivant)
+
+- Pas d'interservice (EVENT/HTTP/MESSAGE/PERSISTENCE non émis) ; la construction
+  interservice et la nomination métier (title humano-LLM) restent des chantiers
+  futurs explicitement bornés par ADR-024.
+- `check-doc-claims` devra épingler les nouvelles commandes à un stade ultérieur.
+
+## v0.8 — Cycle 2 : nomination des capacités et vue top-down
+
+Suite directe du cycle 1 (demande « enchaine »). ADR-024 étendu (articles 2).
+
+### Livré (local, aucun push/merge)
+
+- **`ske capabilities list|nominate|reject|show`** (module
+  `crates/ske-query/src/capabilities.rs`) : la nomination humaine du titre
+  d'une capacité (`functional_capabilities.title`), qui reste `NULL` tant
+  qu'aucun humain ne la nomme ; `HUMAN_VALIDATED`/`REJECTED` ; `show` donne la
+  vue top-down capacité → scénarios → cas (réutilise `scenarios::show`).
+  Aucune génération automatique de dénomination.
+- **`ske docs render --capabilities`** : écrit `CAPABILITIES.md`, la
+  documentation orientée métier (titre, statut, matrices des scénarios).
+- 4 nouveaux tests d'intégration (nomination + rejet, erreur sans capacité,
+  vue top-down, CAPABILITIES.md) → 9 tests `scenarios_docs` au total.
+
+### Vérifications
+
+- `cargo test --workspace` : **380 PASS / 0 FAIL** (cycle 1+2).
+- `cargo fmt --all -- --check` propre ; `cargo clippy --workspace --all-targets
+  -- -D warnings` propre.
+- Aucune migration, aucun schéma modifié.
+
+### Démo observable
+
+- `nominate example.Check "Contrôle d'éligibilité (âge + activation)"` →
+  `HUMAN_VALIDATED` ; `reject example.Decide` → `REJECTED` (titre conservé).
+- `docs render --capabilities` → `CAPABILITIES.md` : la capacité nommée
+  `Contrôle d'éligibilité (…)` pointe son scénario `Check` (3 cas), les
+  capacités non nommées/rejetées s'affichent `(non nommée)` / `REJECTED`.
+
+### Suites (étage 3, à décider)
+
+- Interservice (EVENT/HTTP/MESSAGE/PERSISTENCE) : construction à partir d'une
+  bibliothèque de modèles §7.3 ; reste le grand chantier vers la maturité (B).
+- Nomination LLM (`LLM_INFERRED`) : déclaré futur (aucun token dépensé).
+- `stale-check` des capacités : aligné sur les règles v0.5, non implémenté.
