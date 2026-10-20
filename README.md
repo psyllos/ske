@@ -88,7 +88,23 @@ target/debug/ske docs render --db "$DB" --snapshot latest --out docs/functional 
     # + CAPABILITIES.md (vue top-down par capacité, dénominations humaines)
 ```
 
-Voir [la validation v0.8](docs/validation/v0.8.md), [l'ADR-024](docs/adr/ADR-024.md).
+Depuis v0.8 (cycle 3), la documentation générée est rédigée pour être lue par
+un humain **fonctionnel/métier** : `INDEX.md` ouvre sur une légende
+« Comment lire cette documentation » (vocabulaire, statuts, précision), chaque
+fiche est menée par le titre de capacité nommé par un humain et reformule
+déterministiquement chaque cas en « si … alors … » avec son ancre source.
+Aucune interprétation métier n'est inventée (AC-0.5-08).
+
+Pour qu'une IA (ou un agent) navigue **directement dans le SQLite généré** sans
+builder le CLI, un skill projet est fourni :
+
+```sh
+python3 .agents/skills/ske-knowledge-navigate/scripts/ske-navigate.py summary "$DB"
+python3 .agents/skills/ske-knowledge-navigate/scripts/ske-navigate.py chain "$DB" --entry example.Check --depth 2
+```
+
+Voir [le skill](.agents/skills/ske-knowledge-navigate/SKILL.md),
+[la validation v0.8](docs/validation/v0.8.md), [l'ADR-024](docs/adr/ADR-024.md).
 ```
 
 `POSSIBLE` n'est pas un témoin exécuté. `PROVEN_UNREACHABLE` est une preuve

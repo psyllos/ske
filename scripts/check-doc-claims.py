@@ -152,6 +152,13 @@ CLAIMS = [
         "assertion": "ske db check signale ok après un import (22 contrôles).",
         "check": "bash -c 'DB=$(mktemp -d)/k.sqlite; target/debug/ske init --db $DB; target/debug/ske db check --db $DB --format json | python3 -c \"import json,sys; d=json.load(sys.stdin); assert d[\\\"ok\\\"] is True; assert len(d[\\\"checks\\\"])==22, len(d[\\\"checks\\\"])\"'",
     },
+    {
+        "id": "docs-render-readable-for-business",
+        "docs": ["docs/validation/v0.8.md", "README.md"],
+        "assertion": "docs render produit une documentation lisible par un humain non-technique : INDEX.md porte la légende « Comment lire cette documentation », les fiches mènent par le titre de capacité nommé et reformulent chaque cas en si… alors… (rien n'est inventé, AC-0.5-08).",
+        "check": "cargo test -p ske-cli --test scenarios_docs docs_render -- --test-threads=1",
+        "expect_test": "docs_render_index_carries_reading_legend",
+    },
 ]
 
 PASS = {"number": 0, "status": "PASS", "checks_succeeded": True, "details": []}
@@ -170,7 +177,7 @@ def run_check(claim: dict) -> tuple[bool, str]:
     try:
         proc = subprocess.run(["bash", "-c", check], cwd=ROOT, capture_output=True, text=True, timeout=1800)
         detail = (proc.stdout + proc.stderr).strip()
-        return proc.returncode == 0, detail[:400]
+        return proc.returncode == 0, detail
     except subprocess.TimeoutExpired:
         return False, "timeout"
 
@@ -218,7 +225,13 @@ def main(argv=None):
                     detail += f" [test-name check failed: {error}]"
         record["checks_succeeded"] = ok
         record["status"] = "PASS" if ok else "FAIL"
-        record["details"] = [{"command": claim.get("check", claim.get("python", "")), "output": detail or "", "ok": ok}]
+        record["details"] = [
+            {
+                "command": claim.get("check", claim.get("python", "")),
+                "output": detail[:400],
+                "ok": ok,
+            }
+        ]
         record["note"] = claim.get("note")
         results.append(record)
     counts = {"PASS": 0, "FAIL": 0, "NOT_RUN": 0}

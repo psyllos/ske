@@ -3,12 +3,57 @@
 //! status badges, proved-unreachable branches, and source anchors. The
 //! authoritative run per function is its latest *complete* summary; repeated
 //! behavior runs of the same summary are not duplicated. No business text is
-//! ever invented (AC-0.5-08): the fiches render only rules and statuses.
+//! ever invented (AC-0.5-08): the fiches render only rules and statuses. The
+//! human-nominated capability title (when present) leads the fiche so a
+//! non-technical reader immediately sees the business purpose.
+//!
+//! v0.8 cycle 3 (readability): INDEX.md carries a legend explaining the
+//! vocabulary (scénario, cas, précision, statuts, preuve d'inaccessibilité)
+//! and a deterministic "si … alors …" restatement of each case. Nothing new
+//! is asserted about the analyzed code.
 use rusqlite::Connection;
 use serde_json::{json, Value};
 use ske_common::{Error, Result};
 use std::io::Write;
 use std::path::Path;
+
+/// Shared "how to read this documentation" legend (plain French, rendered in
+/// INDEX.md and referenced by every fiche). It explains SKE's own vocabulary;
+/// it never interprets the analyzed source.
+const LEGEND: &str = r#"## Comment lire cette documentation
+
+Cette documentation est **générée par SKE** à partir d'une analyse du code
+source (Go, Rust, Java). Elle décrit ce que le moteur a *reconstruit*, pas ce
+qu'une personne aurait rédigé : chaque affirmation est ancrée dans le code
+analysé (principe « aucune interprétation métier inventée »).
+
+### Vocabulaire
+
+- **Scénario** : le comportement d'une fonction d'entrée, reconstruit par
+  l'analyse interprocédurale. C'est la « fiche comportement » d'une fonction.
+- **Cas (WHEN / THEN)** : une ligne de la matrice. `WHEN` = la condition,
+  `THEN` = le résultat (valeur retournée ou effet observable). Rendus
+  déterministes R1–R6, directement issus de l'analyse.
+- **Précision** : fiabilité du résultat. `EXACT` = exact ; `OVERAPPROX` =
+  sur-approximation (le moteur couvre *au moins* les vrais comportements) ;
+  `PARTIAL` = partiel (certaines branches non couvertes) ; `UNKNOWN` = inconnu.
+- **Règle** : un comportement extrait, rattaché à un cas (condition → résultat).
+- **Statut d'une règle ou capacité** :
+  - `UNVALIDATED` : reconstruit par le moteur, pas encore relu par un humain ;
+  - `HUMAN_VALIDATED` : un humain a validé ou nommé explicitement ;
+  - `REJECTED` : un humain a rejeté la proposition (le titre est conservé) ;
+  - `STALE` : la source a changé depuis l'analyse, à rejouer.
+- **Branche prouvée inatteignable** (`MODEL_UNREACHABLE`) : le solveur SMT
+  (Z3) a prouvé qu'aucun chemin du *modèle* n'emprunte cette branche. C'est
+  une forte indication, pas une certitude absolue du logiciel source.
+- **Source** : ancre `fichier:ligne-colonne` dans le code analysé.
+- **Run autoritatif** : le dernier scénario complet reconstruit pour la
+  fonction ; les cas d'un même résumé ne sont jamais dupliqués.
+
+Les titres de capacités (vocabulaire métier) proviennent **uniquement** de
+nominations humaines (`ske capabilities nominate`). Rien d'autre n'est
+interprété par le moteur.
+"#;
 
 fn sql(e: rusqlite::Error) -> Error {
     Error::new("E_DB_INTEGRITY", e.to_string())
@@ -165,16 +210,31 @@ pub fn render_capabilities(db: &Connection, snapshot: i64, out: &Path) -> Result
     body.push_str("> Généré par SKE. Les titres proviennent de la **nomination humaine**\n");
     body.push_str("> (`HUMAN_VALIDATED`) ; une capacité sans titre reste `UNVALIDATED`.\n");
     body.push_str("> Aucune dénomination n'est inventée par le moteur.\n\n");
+    body.push_str(&format!(
+        "Ce document regroupe les **{} capacité(s)** du snapshot par domaine\n",
+        caps.len()
+    ));
+    body.push_str("métier, chaque capacité menant aux scénarios qui la réalisent puis à leur\n");
+    body.push_str("matrice condition → résultat. C'est la lecture recommandée pour une\n");
+    body.push_str("non-technique : commencez par les titres nommés par un humain.\n\n");
+    body.push_str("> Légende et vocabulaire : voir « Comment lire cette documentation » dans\n");
+    body.push_str("> `INDEX.md`.\n\n");
     let mut count = 0usize;
     for cap in &caps {
         let cap_id = cap["cap_id"].as_i64().unwrap();
         let title = cap["title"].as_str().unwrap_or("(non nommée)");
         let status = cap["validation_status"].as_str().unwrap_or("");
         let key = cap["canonical_key"].as_str().unwrap_or("");
-        body.push_str(&format!("## `{title}`\n\n"));
-        body.push_str(&format!("- clé : `{key}`\n"));
+        body.push_str(&format!("## {title}\n\n"));
+        body.push_str(&format!("- clé technique : `{key}`\n"));
+        let (statut_lisible, badge) = match status {
+            "HUMAN_VALIDATED" => ("validée par un humain", "`HUMAN_VALIDATED`"),
+            "REJECTED" => ("rejetée par un humain (titre conservé)", "`REJECTED`"),
+            "STALE" => ("source modifiée depuis l'analyse — à rejouer", "`STALE`"),
+            _ => ("non encore validée", "`UNVALIDATED`"),
+        };
         body.push_str(&format!(
-            "- statut : `{status}` · origine : `{}`\n\n",
+            "- statut : {badge} ({statut_lisible}) · origine : `{}`\n\n",
             cap["origin"].as_str().unwrap_or("")
         ));
         let scenarios = rows(
@@ -203,9 +263,15 @@ pub fn render_capabilities(db: &Connection, snapshot: i64, out: &Path) -> Result
                 )
                 .map_err(sql)?;
             body.push_str(&format!("### Scénario `{entry}` ({unit_key})\n\n"));
+            body.push_str("Ce scénario réalise la capacité ci-dessus : chaque ligne est un\n");
+            body.push_str("comportement **si … alors …** reconstruit par le moteur.\n\n");
             let cases = behavior_cases(db, fid)?;
-            body.push_str("| # | WHEN | THEN | Précision |\n");
-            body.push_str("|---|------|------|-----------|\n");
+            body.push_str(
+                "| # | Condition (quand / WHEN) | Résultat (alors / THEN) | Précision |\n",
+            );
+            body.push_str(
+                "|---|---------------------------|--------------------------|-----------|\n",
+            );
             for c in &cases {
                 body.push_str(&format!(
                     "| {} | `{}` | `{}` | {} |\n",
@@ -251,11 +317,6 @@ fn fiche(
     let package = unit_key.split('@').next().unwrap_or(unit_key).to_owned();
     let filename = format!("{}.md", qualified.replace(['/', '.', '(', ')', '*'], "_"));
     let mut body = String::new();
-    body.push_str(&format!("# Fonction `{qualified}`\n\n"));
-    body.push_str("> Fiche générée par SKE (v0.8). Chaque règle est ancrée à la source,\n");
-    body.push_str("> portée par le run autoritatif du snapshot. Aucune interprétation métier.\n\n");
-    body.push_str(&format!("- unité : `{unit_key}`\n"));
-    // Capability nomination (human title), if any, for this function.
     let capability_key = format!("function:{unit_key}|{qualified}");
     let cap = rows(
         db,
@@ -263,21 +324,77 @@ fn fiche(
          WHERE canonical_key=?1 AND title IS NOT NULL",
         [&capability_key],
     )?;
-    if let Some(c) = cap.first() {
+    let cap_title = cap
+        .first()
+        .and_then(|c| c["title"].as_str())
+        .map(|s| s.to_owned());
+    // Lead with the human-nominated business name when present; otherwise the
+    // function name carries the fiche.
+    match &cap_title {
+        Some(title) => {
+            body.push_str(&format!("# {title}\n\n"));
+            body.push_str(&format!(
+                "> Fonction `{qualified}` — fiche générée par SKE.\n"
+            ));
+        }
+        None => {
+            body.push_str(&format!("# Fonction `{qualified}`\n\n"));
+        }
+    }
+    body.push_str("> Guide de lecture : voir la légende « Comment lire cette documentation »\n");
+    body.push_str("> dans `INDEX.md` (vocabulaire, statuts, précision).\n\n");
+    body.push_str(&format!("- unité : `{unit_key}`\n"));
+    if let (Some(title), Some(c)) = (cap_title.as_deref(), cap.first()) {
+        let statut_lisible = match c["validation_status"].as_str() {
+            Some("HUMAN_VALIDATED") => "validée par un humain",
+            Some("REJECTED") => "rejetée par un humain",
+            Some("STALE") => "source modifiée depuis l'analyse",
+            _ => "non encore validée",
+        };
+        body.push_str(&format!("- capacité : **{title}** — {statut_lisible}\n"));
+    }
+    let precision = cases[0]["precision"].as_str().unwrap_or("");
+    body.push_str(&format!(
+        "- cas identifiés : {}{} · précision dominante : `{precision}`\n",
+        cases.len(),
+        if rules.is_empty() {
+            String::new()
+        } else {
+            format!(" · règles : {}", rules.len())
+        }
+    ));
+    if !unreas.is_empty() {
         body.push_str(&format!(
-            "- capacité : `{}` ({})\n",
-            c["title"].as_str().unwrap_or(""),
-            c["validation_status"].as_str().unwrap_or("")
+            "- branches prouvées inatteignables : {}\n",
+            unreas.len()
         ));
     }
-    body.push_str(&format!(
-        "- nombre de cas : {} · précision : {}\n\n",
-        cases.len(),
-        cases[0]["precision"].as_str().unwrap_or("")
-    ));
-    body.push_str("## Comportement (matrice condition → résultat)\n\n");
-    body.push_str("| # | WHEN | THEN | Précision | Source |\n");
-    body.push_str("|---|------|------|-----------|--------|\n");
+    body.push('\n');
+    // Deterministic plain-language restatement (no invented business meaning).
+    body.push_str("## En clair — comportements reconstruits\n\n");
+    body.push_str("Chaque ligne dit : **si** la condition est vraie **alors** le résultat\n");
+    body.push_str("observé est celui indiqué, tel que reconstruit par l'analyse.\n\n");
+    for c in &cases {
+        let src = match c["exit_span"].as_i64() {
+            Some(span) => span_label(db, span)?,
+            None => "-".to_owned(),
+        };
+        body.push_str(&format!(
+            "- **Cas {}** — si `{}` alors `{}` _(source {})_\n",
+            c["case_ordinal"].as_i64().unwrap_or(0),
+            escape_md(c["guard_text"].as_str().unwrap_or("")),
+            escape_md(c["result_text"].as_str().unwrap_or("")),
+            src
+        ));
+    }
+    body.push('\n');
+    body.push_str("## Matrice complète (condition → résultat)\n\n");
+    body.push_str(
+        "| # | Condition (quand / WHEN) | Résultat (alors / THEN) | Précision | Source |\n",
+    );
+    body.push_str(
+        "|---|---------------------------|--------------------------|-----------|--------|\n",
+    );
     for c in &cases {
         let src = match c["exit_span"].as_i64() {
             Some(span) => span_label(db, span)?,
@@ -378,11 +495,22 @@ pub fn render(db: &Connection, snapshot: i64, out: &Path) -> Result<Value> {
     // Index.
     let mut index = String::new();
     index.push_str("# Documentation fonctionnelle — index\n\n");
-    index.push_str("> Généré par SKE. Les fiches sont le reflet déterministe des\n");
-    index.push_str("> comportements reconstruits ; les statuts `STALE` signalent une\n");
-    index.push_str("> fiche dont la source a changé depuis le snapshot analysé.\n\n");
+    index.push_str("> Générée par SKE (v0.8). Ce dossier décrit, pour chaque fonction ayant\n");
+    index.push_str("> un scénario reconstruit, son comportement reconstruit : matrice\n");
+    index.push_str("> condition → résultat, règles et statuts, branches prouvées\n");
+    index.push_str("> inatteignables. Les statuts `STALE` signalent une source modifiée\n");
+    index.push_str("> depuis le snapshot analysé (à rejouer).\n\n");
+    index.push_str(&format!(
+        "Ce snapshot référence **{} fiche(s)** : suivez les liens ci-dessous ou\n",
+        fiche_count
+    ));
+    index.push_str("ouvrez `CAPABILITIES.md` (si généré) pour la vue métier top-down.\n\n");
+    index.push_str("---\n\n");
+    index.push_str(LEGEND);
+    index.push_str("\n---\n\n");
+    index.push_str("## Fonctions documentées\n\n");
     for (package, entries) in &packages {
-        index.push_str(&format!("## `{package}`\n\n"));
+        index.push_str(&format!("### `{package}`\n\n"));
         for e in entries {
             index.push_str(&format!(
                 "- [{}]({})\n",

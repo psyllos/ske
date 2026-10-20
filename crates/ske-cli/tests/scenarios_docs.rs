@@ -273,6 +273,79 @@ fn docs_render_capabilities_writes_top_down_view() {
     assert!(body.contains("(non nommée)"));
 }
 
+// ---- Cycle 3 : readability for business humans (v0.8) ----
+
+#[test]
+fn docs_render_index_carries_reading_legend() {
+    let lab = Lab::new();
+    let q = open(&lab);
+    reconstruct(&q, "example.Check");
+    let out = tempfile::tempdir().unwrap();
+    q.docs_render("latest", None, out.path()).unwrap();
+    let index = std::fs::read_to_string(out.path().join("INDEX.md")).unwrap();
+    // The legend explains the vocabulary to a non-technical reader.
+    for needle in [
+        "Comment lire cette documentation",
+        "Scénario",
+        "WHEN / THEN",
+        "UNVALIDATED",
+        "HUMAN_VALIDATED",
+        "MODEL_UNREACHABLE",
+        "Précision",
+        "Fonctions documentées",
+    ] {
+        assert!(
+            index.contains(needle),
+            "INDEX.md must explain {needle:?} for human readers"
+        );
+    }
+}
+
+#[test]
+fn docs_render_fiche_leads_with_human_title_and_plain_restatement() {
+    let lab = Lab::new();
+    let q = open(&lab);
+    reconstruct(&q, "example.Check");
+    q.capability_nominate("latest", None, "example.Check", "Éligibilité")
+        .unwrap();
+    let out = tempfile::tempdir().unwrap();
+    q.docs_render("latest", None, out.path()).unwrap();
+    let fiche = std::fs::read_to_string(out.path().join("example_Check.md")).unwrap();
+    // Business name leads the fiche instead of the raw function name.
+    assert!(fiche.starts_with("# Éligibilité"), "human title must lead");
+    assert!(
+        !fiche.contains("# Fonction `example.Check`"),
+        "raw function name must not be the H1"
+    );
+    // Plain "if … then …" restatement of the behavior.
+    assert!(fiche.contains("## En clair — comportements reconstruits"));
+    assert!(fiche.contains("si `age < 18` alors `return ErrUnderage`"));
+    assert!(fiche.contains("si `age >= 18 AND enabled == true` alors `return nil`"));
+    // The vocabulary/legend pointer.
+    assert!(fiche.contains("Comment lire cette documentation"));
+    assert!(fiche.contains("capacité : **Éligibilité**"));
+}
+
+#[test]
+fn docs_render_capabilities_has_business_intro() {
+    let lab = Lab::new();
+    let q = open(&lab);
+    reconstruct(&q, "example.Check");
+    q.capability_nominate("latest", None, "example.Check", "Éligibilité")
+        .unwrap();
+    let out = tempfile::tempdir().unwrap();
+    q.docs_render_capabilities("latest", None, out.path())
+        .unwrap();
+    let body = std::fs::read_to_string(out.path().join("CAPABILITIES.md")).unwrap();
+    // Business-oriented intro and status explanation.
+    assert!(body.contains("vue top-down"));
+    assert!(body.contains("lecture recommandée"));
+    assert!(body.contains("validée par un humain"));
+    assert!(body.contains("Condition (quand / WHEN)"));
+    // The (non nommée) capability keeps its technical key.
+    assert!(body.contains("clé technique"));
+}
+
 // ---- Cycle 3 : capability stale-check + interservice contracts (v0.8) ----
 
 #[test]

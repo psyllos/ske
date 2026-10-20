@@ -2266,3 +2266,55 @@ Suite directe du cycle 1 (demande « enchaine »). ADR-024 étendu (articles 2).
   bibliothèque de modèles §7.3 ; reste le grand chantier vers la maturité (B).
 - Nomination LLM (`LLM_INFERRED`) : déclaré futur (aucun token dépensé).
 - `stale-check` des capacités : aligné sur les règles v0.5, non implémenté.
+
+## v0.8 — Cycle 3 : documentation lisible par un humain fonctionnel + skill de navigation IA
+
+Demande de psyllos : (1) en parallèle de la génération du SQLite, fournir un
+**document SKILLS avec scripts** pour qu'une IA navigue facilement dans la base ;
+(2) rendre la **documentation générée** compréhensible par un humain métier.
+
+### Livré (local, aucun push/merge)
+
+- **Skill projet Delta** [`.agents/skills/ske-knowledge-navigate/`] :
+  `SKILL.md` (déclencheurs, modèle de connaissances, mapping des tables,
+  commandes `ske` et discipline AC-0.5-08) + `scripts/ske-navigate.py`
+  (lecture seule, stdlib `sqlite3`, déterministe) : sous-commandes `summary`,
+  `schema`, `functions`, `scenarios`, `chain`, `capabilities`, `rules`,`docs`.
+  Une IA peut explorer une base `.sqlite` générée **sans builder le CLI**
+  (`python3 ske-navigate.py summary knowledge.sqlite`, etc.), avec la même
+  convention de préfixe `unit_key|` que le DTO public.
+- **`ske docs render` plus lisible** (`crates/ske-query/src/docs.rs`) :
+  - `INDEX.md` mène par une légende **« Comment lire cette documentation »**
+    (scénario, cas `WHEN/THEN`, précision, statuts, `MODEL_UNREACHABLE`,
+    run autoritatif) puis index des fonctions documentées ;
+  - fiche **menée par le titre de capacité humain** quand il existe (sinon le
+    nom de fonction), guide de lecture, résumé (cas/règles/branches prouvées),
+    reformulation déterministe **« si … alors … »** de chaque cas avec ancre
+    source, matrice complète aux en-têtes bilingues, règles et statuts,
+    branches prouvées inatteignables ;
+  - `CAPABILITIES.md` : intro métier (« lecture recommandée »), statuts
+    expliqués en clair, clé technique conservée pour les non nommées.
+  Rien n'est inventé (AC-0.5-08) : reformulation déterministe seulement.
+- 3 nouveaux tests d'intégration `scenarios_docs` (légende dans INDEX, fiche
+  menée par le titre + « si … alors … », intro métier CAPABILITIES) →
+  **17 tests** au total. Claim `check-doc-claims`
+  `docs-render-readable-for-business` épinglé aux tests.
+
+### Vérifications
+
+- `cargo test --workspace` : **385 PASS / 0 FAIL**.
+- `cargo fmt --all -- --check` propre ; `cargo clippy -p ske-query -p ske-cli
+  --all-targets -- -D warnings` propre.
+- `python3 scripts/check-doc-claims.py --only docs-render-readable-for-business`
+  : PASS.
+- `ske-navigate.py` testé sur la base réelle du laboratoire Go
+  (`/tmp/sketest/k.sqlite`) : summary/schema/functions/scenarios/chain/
+  capabilities/rules/docs tous fonctionnels.
+- Aucune migration, aucun schéma modifié.
+
+### Limites et suites (toujours ADR-024)
+
+- Interservice non construit ; nomination LLM non utilisée ; la compréhension
+  « métier » reste limitée à ce que SKE reconstruit (pas de rédaction libre).
+- Le skill est projet (`.agents/skills/`) et versionné : il s'applique à toute
+  base SKE générée, pas seulement aux fixtures.
