@@ -2318,3 +2318,24 @@ Demande de psyllos : (1) en parallèle de la génération du SQLite, fournir un
   « métier » reste limitée à ce que SKE reconstruit (pas de rédaction libre).
 - Le skill est projet (`.agents/skills/`) et versionné : il s'applique à toute
   base SKE générée, pas seulement aux fixtures.
+
+## Landing `/land` — cycle 3 sur main (v0.8)
+
+Autorisation explicite `/land` de psyllos. Le travail cycle 3 a été committé et
+poussé sur `origin/main` (avance rapide `931688a` → `b7fdc5b`) :
+
+- `b7fdc5b` `feat(query): v0.8 cycle-3 docs readable for business humans +
+  AI navigation skill` (9 fichiers, +904/−30) : docs.rs lisible métier,
+  skill `.agents/skills/ske-knowledge-navigate/`, 3 tests + claim
+  `docs-render-readable-for-business`, correctif `run_check`.
+- Premier run CI `39486514355` : échec intermittent **avant** toute exécution
+  significative de mes changements — `cir_compat_multilang`
+  (`crates/ske-cli/tests/multilang.rs`) en `E_ADAPTER_LIMIT` (monitoring
+  time/memory adaptateur), classe connue et documentée des flakes sensibles
+  aux ressources (`BLOCKED-v0.4-land-ci.md`, v0.6 CI Linux). Le diff ne touche
+  ni multilang ni adaptateurs ni ingestion (vérifié).
+- Rerun du même commit : **CI verte** (run `39486514355`, SUCCESS, Linux +
+  macOS), `origin/main` = `b7fdc5b` confirmé.
+
+Non-régression précédemment constatée localement : `cargo test --workspace`
+385 PASS / 0 FAIL, fmt/clippy propres, claim doc-claims PASS.
